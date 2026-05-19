@@ -1,3 +1,4 @@
+import setup_db
 import os
 import uuid
 import time
