@@ -1,335 +1,56 @@
-import re
+from rag.llm import generate_text
+from rag.prompts import ANSWER_PROMPT
+from rag.retriever import retrieve_chunks
 
-from langchain_core.messages import (
-    HumanMessage,
-    AIMessage,
-)
-
-from rag.llm import llm
-
-from rag.retriever import (
-    retrieve_chunks,
-    load_vectorstore,
-)
-
-from rag.prompts import (
-    SYSTEM_PROMPT,
-)
+NO_CONTEXT_ANSWER = "I could not find sufficient information in the selected documents."
 
 
-# -----------------------------------
-# CHAT STORE
-# -----------------------------------
-chat_store = {}
-
-
-# -----------------------------------
-# GET HISTORY
-# -----------------------------------
-def get_chat_history(
-    session_id,
-):
-
-    if session_id not in chat_store:
-
-        chat_store[session_id] = []
-
-    return chat_store[session_id]
-
-
-# -----------------------------------
-# REWRITE QUERY
-# -----------------------------------
-def rewrite_query(
-    question,
-    history,
-):
-
-    if not history:
-
-        return question
-
-    prompt = f"""
-Rewrite the latest question into a standalone question.
-
-CHAT HISTORY:
-{history}
-
-QUESTION:
-{question}
-"""
-
-    response = llm.invoke(
-        prompt
-    )
-
-    return response.content
-
-
-# -----------------------------------
-# EXTRACT ARTICLE NUMBER
-# -----------------------------------
-def extract_article_number(
-    question,
-):
-
-    match = re.search(
-        r"article\s+(\d+)",
-        question.lower(),
-    )
-
-    if match:
-
-        return (
-            f"Article {match.group(1)}"
+def build_context(chunks) -> str:
+    return "\n\n".join(
+        (
+            f"[{chunk.citation}] {chunk.document_name}"
+            f" | {_page_label(chunk.page, chunk.metadata.get('page_end'))}"
+            f" | {_legal_label(chunk)}\n"
+            f"{chunk.content}"
         )
-
-    return None
-
-
-# -----------------------------------
-# BUILD CONTEXT
-# -----------------------------------
-def build_context(
-    chunks,
-):
-
-    context = ""
-
-    for chunk in chunks:
-
-        metadata = (
-            chunk.metadata
-        )
-
-        context += f"""
-
-SOURCE:
-{metadata.get("source_name")}
-
-ARTICLE:
-{metadata.get("article")}
-
-PAGE:
-{metadata.get("page")}
-
-TEXT:
-{chunk.page_content}
-
------------------------------------
-"""
-
-    return context
-
-
-# -----------------------------------
-# RETRIEVE CHUNKS
-# -----------------------------------
-def retrieve_all_chunks(
-    question,
-    session_id,
-    upload_db_path=None,
-):
-
-    all_chunks = []
-
-    # -----------------------------------
-    # USER UPLOADS FIRST
-    # -----------------------------------
-    if upload_db_path:
-
-        try:
-
-            upload_chunks = (
-                retrieve_chunks(
-                    query=question,
-                    persist_directory=(
-                        upload_db_path
-                    ),
-                    k=5,
-                )
-            )
-
-            all_chunks.extend(
-                upload_chunks
-            )
-
-        except Exception as e:
-
-            print(
-                f"Upload retrieval failed: {e}"
-            )
-
-    # -----------------------------------
-    # EXACT ARTICLE MATCH
-    # -----------------------------------
-    article_name = (
-        extract_article_number(
-            question
-        )
+        for chunk in chunks
     )
 
-    if article_name:
 
-        try:
-
-            base_vectorstore = (
-                load_vectorstore(
-                    "data/chroma/base"
-                )
-            )
-
-            exact_matches = (
-                base_vectorstore.similarity_search(
-                    query=question,
-                    k=3,
-                    filter={
-                        "article": (
-                            article_name
-                        )
-                    },
-                )
-            )
-
-            if exact_matches:
-
-                all_chunks.extend(
-                    exact_matches
-                )
-
-                return all_chunks
-
-        except Exception as e:
-
-            print(
-                f"Exact retrieval failed: {e}"
-            )
-
-    # -----------------------------------
-    # CONSTITUTION RETRIEVAL
-    # -----------------------------------
-    try:
-
-        base_chunks = retrieve_chunks(
-            query=question,
-            persist_directory=(
-                "data/chroma/base"
-            ),
-            k=3,
-        )
-
-        all_chunks.extend(
-            base_chunks
-        )
-
-    except Exception as e:
-
-        print(
-            f"Base retrieval failed: {e}"
-        )
-
-    return all_chunks
+def _page_label(page: int, page_end: int | None) -> str:
+    return f"pages {page}-{page_end}" if page_end and page_end != page else f"page {page}"
 
 
-# -----------------------------------
-# GENERATE ANSWER
-# -----------------------------------
-def generate_answer(
-    question,
-    context,
-    history,
-):
-
-    prompt = f"""
-{SYSTEM_PROMPT}
-
------------------------------------
-CHAT HISTORY
------------------------------------
-
-{history}
-
------------------------------------
-RETRIEVED CONTEXT
------------------------------------
-
-{context}
-
------------------------------------
-QUESTION
------------------------------------
-
-{question}
-
------------------------------------
-INSTRUCTIONS
------------------------------------
-
-Answer ONLY using retrieved context.
-
-If answering about:
-- Constitution Articles → prioritize exact matches
-- Uploaded PDFs → prioritize uploaded content
-
-Be concise and factual.
-"""
-
-    response = llm.invoke(
-        prompt
-    )
-
-    return response.content
+def _legal_label(chunk) -> str:
+    metadata = chunk.metadata
+    if metadata.get("section_number"):
+        chapter = f" | Chapter {metadata['chapter_number']}" if metadata.get("chapter_number") else ""
+        return f"Section {metadata['section_number']}{chapter}"
+    return chunk.article or "No article"
 
 
-# -----------------------------------
-# MAIN CHAT FUNCTION
-# -----------------------------------
-def ask_question(
-    question,
-    session_id="default",
-    upload_db_path=None,
-):
-
-    history = get_chat_history(
-        session_id
-    )
-
-    standalone_question = (
-        rewrite_query(
-            question,
-            history,
-        )
-    )
-
-    chunks = retrieve_all_chunks(
-        standalone_question,
-        session_id,
-        upload_db_path,
-    )
-
-    context = build_context(
-        chunks
-    )
-
-    answer = generate_answer(
-        standalone_question,
-        context,
-        history,
-    )
-
-    history.append(
-        HumanMessage(
-            content=question
-        )
-    )
-
-    history.append(
-        AIMessage(
-            content=answer
-        )
-    )
-
+def ask_question(owner_email: str, selected_document_ids: list[str], question: str, history: list[dict]) -> dict:
+    chunks = retrieve_chunks(owner_email, selected_document_ids, question, history)
+    if not chunks:
+        return {"answer": NO_CONTEXT_ANSWER, "sources": []}
+    text_history = "\n".join(f"{item['role']}: {item['content']}" for item in history[-6:])
+    answer = generate_text(ANSWER_PROMPT.format(
+        context=build_context(chunks),
+        history=text_history or "None",
+        question=question,
+    ))
     return {
-        "answer": answer,
-        "sources": chunks,
+        "answer": answer or NO_CONTEXT_ANSWER,
+        "sources": [
+            {
+                "citation": chunk.citation,
+                "document_name": chunk.document_name,
+                "page": chunk.page,
+                "page_end": chunk.metadata.get("page_end"),
+                "article": chunk.article,
+                "metadata": chunk.metadata,
+                "text": chunk.content,
+            }
+            for chunk in chunks
+        ],
     }

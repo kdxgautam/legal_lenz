@@ -2,24 +2,23 @@
 [project]
 name = "legal-lenz"
 version = "0.1.0"
-description = "Add your description here"
+description = "Controlled Streamlit RAG service for legal PDFs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "chromadb>=1.5.9",
     "google-genai>=2.4.0",
-    "langchain>=1.3.1",
-    "langchain-chroma>=1.1.0",
-    "langchain-community>=0.4.1",
-    "langchain-core>=1.4.0",
-    "langchain-groq>=1.1.2",
-    "langchain-huggingface>=1.2.2",
-    "langchain-pinecone>=0.2.13",
-    "numpy>=2.4.6",
-    "pinecone-client>=6.0.0",
+    "google-cloud-storage>=3.6.0",
+    "cloud-sql-python-connector[pg8000]>=1.20.0",
+    "sqlalchemy>=2.0.45",
     "pymupdf>=1.27.2.3",
-    "python-dotenv>=1.2.2",
-    "sentence-transformers>=5.5.0",
-    "streamlit>=1.57.0",
-    "torchvision>=0.27.0",
+    "langchain-text-splitters>=1.0.1",
+    "streamlit[auth]>=1.57.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

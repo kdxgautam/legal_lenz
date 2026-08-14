@@ -9,4 +9,9 @@ wheels/
 # Virtual environments
 .venv
 .env
+application_default_credentials.json
+.streamlit/secrets.toml
+setup_adc.sh
+data/chroma/
+data/pdfs/*.pdf
 __pycache__

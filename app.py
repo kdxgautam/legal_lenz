@@ -1,446 +1,145 @@
-import setup_db
-import os
-import uuid
-import time
-
 import streamlit as st
 
-from rag.ingest import ingest_pdf
 from rag.chat import ask_question
+from rag.config import APPROVED_EMAILS
+from rag.db import delete_document_row, get_owned_document, list_documents
+from rag.ingest import IngestError, ingest_pdf
+from rag.storage import delete_object
+
+st.set_page_config(page_title="Legal Lenz", page_icon=":material/gavel:", layout="wide")
 
 
-# -----------------------------------
-# PAGE CONFIG
-# -----------------------------------
-st.set_page_config(
-    page_title="Legal Lenz",
-    page_icon="⚖️",
-    layout="wide",
-)
+def logged_in_email() -> str:
+    return (st.user.get("email") or "").lower()
 
 
-# -----------------------------------
-# SESSION ID
-# -----------------------------------
-if "session_id" not in st.session_state:
+def source_caption(source: dict) -> str:
+    metadata = source.get("metadata") or {}
+    page_end = source.get("page_end")
+    pages = f"pages {source['page']}-{page_end}" if page_end and page_end != source["page"] else f"page {source['page']}"
+    if metadata.get("section_number"):
+        legal_unit = f"Section {metadata['section_number']}"
+        if metadata.get("chapter_number"):
+            legal_unit += f" | Chapter {metadata['chapter_number']}"
+    else:
+        legal_unit = source["article"] or "No article"
+    return f"[{source['citation']}] {source['document_name']} | {pages} | {legal_unit}"
 
-    st.session_state.session_id = (
-        str(uuid.uuid4())
-    )
-
-SESSION_ID = (
-    st.session_state.session_id
-)
-
-
-# -----------------------------------
-# SESSION STATE
-# -----------------------------------
-if "messages" not in st.session_state:
-
-    st.session_state.messages = []
-
-if "latest_upload_db" not in st.session_state:
-
-    st.session_state.latest_upload_db = None
-
-
-# -----------------------------------
-# CUSTOM CSS
-# -----------------------------------
 st.markdown(
     """
 <style>
-
-html, body, [class*="css"] {
-    font-family: Inter, sans-serif;
-}
-
-.stApp {
-    background: #0f1117;
-    color: white;
-}
-
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
-    max-width: 1200px;
-}
-
-.main-title {
-    font-size: 3rem;
-    font-weight: 700;
-
-    background: linear-gradient(
-        90deg,
-        #7c3aed,
-        #06b6d4
-    );
-
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-
-    margin-bottom: 0.3rem;
-}
-
-.subtitle {
-    color: #9ca3af;
-    font-size: 1rem;
-    margin-bottom: 2rem;
-}
-
-.chat-card {
-    background: rgba(255,255,255,0.04);
-
-    border: 1px solid
-        rgba(255,255,255,0.08);
-
-    padding: 1rem;
-    border-radius: 18px;
-
-    backdrop-filter: blur(10px);
-}
-
-section[data-testid="stSidebar"] {
-    background: #151821;
-
-    border-right:
-        1px solid
-        rgba(255,255,255,0.05);
-}
-
-.sidebar-title {
-    font-size: 1.4rem;
-    font-weight: 700;
-    margin-bottom: 1rem;
-}
-
-.stButton button {
-    width: 100%;
-    border-radius: 12px;
-    height: 3rem;
-
-    border: none;
-
-    background: linear-gradient(
-        90deg,
-        #7c3aed,
-        #2563eb
-    );
-
-    color: white;
-    font-weight: 600;
-
-    transition: 0.2s ease;
-}
-
-.stButton button:hover {
-
-    transform: translateY(-2px);
-
-    box-shadow:
-        0px 8px 20px
-        rgba(124,58,237,0.4);
-}
-
-.stChatInput textarea {
-    border-radius: 16px !important;
-}
-
-.source-card {
-
-    background:
-        rgba(255,255,255,0.03);
-
-    border:
-        1px solid
-        rgba(255,255,255,0.06);
-
-    padding: 1rem;
-    border-radius: 14px;
-
-    margin-bottom: 1rem;
-}
-
-.source-title {
-    font-size: 1rem;
-    font-weight: 700;
-    color: #60a5fa;
-}
-
-.source-meta {
-    color: #9ca3af;
-    font-size: 0.9rem;
-    margin-bottom: 0.5rem;
-}
-
+.stApp { background: #111318; color: #f4f4f5; }
+.block-container { max-width: 1120px; padding-top: 1.5rem; }
+section[data-testid="stSidebar"] { background: #171a21; border-right: 1px solid #2f3440; }
+.small-muted { color: #a1a1aa; font-size: 0.9rem; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
+email = logged_in_email()
+if not email:
+    st.title("Legal Lenz")
+    st.caption("Controlled legal document assistant.")
+    if st.button("Sign in with Google", type="primary"):
+        st.login()
+    st.stop()
 
-# -----------------------------------
-# HEADER
-# -----------------------------------
-st.markdown(
-    """
-<div class="main-title">
-⚖️ Legal Lenz
-</div>
+if email not in APPROVED_EMAILS:
+    st.error("This Google account is authenticated but not approved for Legal Lenz.")
+    if st.button("Sign out"):
+        st.logout()
+    st.stop()
 
-<div class="subtitle">
-AI Legal Assistant powered by RAG.
-Ask questions about the Indian Constitution
-or uploaded legal documents.
-</div>
-""",
-    unsafe_allow_html=True,
-)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "selected_docs" not in st.session_state:
+    st.session_state.selected_docs = []
 
-
-# -----------------------------------
-# SIDEBAR
-# -----------------------------------
 with st.sidebar:
+    st.subheader("Documents")
+    try:
+        docs = list_documents(email)
+    except Exception as exc:
+        st.error("Database is not available. Check Cloud SQL configuration.")
+        st.caption(str(exc))
+        docs = []
 
-    st.markdown(
-        """
-<div class="sidebar-title">
-📄 Upload Legal PDF
-</div>
-""",
-        unsafe_allow_html=True,
+    ready_docs = [doc for doc in docs if doc["status"] == "ready"]
+    labels = {doc["id"]: f"{doc['original_filename']} ({doc['type']})" for doc in ready_docs}
+    st.session_state.selected_docs = st.multiselect(
+        "Selected uploads",
+        options=[doc["id"] for doc in ready_docs if doc["type"] == "upload"],
+        format_func=lambda doc_id: labels.get(doc_id, doc_id),
+        default=[doc_id for doc_id in st.session_state.selected_docs if doc_id in labels],
     )
 
-    uploaded_file = st.file_uploader(
-        "Choose PDF",
-        type="pdf",
-    )
-
-    # -----------------------------------
-    # INGEST PDF
-    # -----------------------------------
-    if st.button("⚡ Ingest PDF"):
-
-        if uploaded_file is not None:
-
-            os.makedirs(
-                "data/pdfs",
-                exist_ok=True,
-            )
-
-            # -----------------------------
-            # SAVE PDF
-            # -----------------------------
-            pdf_path = os.path.join(
-                "data/pdfs",
-                uploaded_file.name,
-            )
-
-            with open(pdf_path, "wb") as f:
-
-                f.write(
-                    uploaded_file.read()
-                )
-
-            # -----------------------------
-            # UNIQUE UPLOAD DB
-            # -----------------------------
-            upload_id = str(
-                int(time.time())
-            )
-
-            upload_db_path = (
-                f"data/chroma/uploads/"
-                f"{SESSION_ID}/"
-                f"{upload_id}"
-            )
-
-            os.makedirs(
-                upload_db_path,
-                exist_ok=True,
-            )
-
-            # -----------------------------
-            # INGEST
-            # -----------------------------
-            progress = st.progress(0)
-
-            with st.spinner(
-                "Processing PDF..."
-            ):
-
-                progress.progress(25)
-
-                ingest_pdf(
-                    pdf_path=pdf_path,
-                    persist_directory=(
-                        upload_db_path
-                    ),
-                    source_name=(
-                        uploaded_file.name
-                    ),
-                )
-
-                progress.progress(100)
-
-            # -----------------------------
-            # SAVE ACTIVE DB
-            # -----------------------------
-            st.session_state[
-                "latest_upload_db"
-            ] = upload_db_path
-
-            st.success(
-                "PDF ingested successfully!"
-            )
-
+    upload = st.file_uploader("Upload PDF", type=["pdf"])
+    if st.button("Ingest PDF", type="primary"):
+        if not upload:
+            st.warning("Choose a PDF first.")
         else:
+            try:
+                with st.spinner("Processing PDF..."):
+                    ingest_pdf(upload.getvalue(), upload.name, "upload", email)
+                st.success("PDF ingested.")
+                st.rerun()
+            except IngestError as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error("Upload failed. Check Storage, database, Gemini quota, and model access.")
 
-            st.warning(
-                "Please upload a PDF."
-            )
-
-    # -----------------------------------
-    # CLEAR CHAT
-    # -----------------------------------
-    if st.button("🗑️ Clear Chat"):
-
-        st.session_state.messages = []
-
-        st.rerun()
+    delete_id = st.selectbox(
+        "Delete upload",
+        options=[""] + [doc["id"] for doc in ready_docs if doc["type"] == "upload"],
+        format_func=lambda doc_id: "Choose document" if not doc_id else labels.get(doc_id, doc_id),
+    )
+    if st.button("Delete permanently", disabled=not delete_id):
+        owned = get_owned_document(email, delete_id)
+        if owned:
+            delete_object(owned["gcs_object"])
+            delete_document_row(delete_id)
+            st.session_state.selected_docs = [doc_id for doc_id in st.session_state.selected_docs if doc_id != delete_id]
+            st.success("Document deleted permanently.")
+            st.rerun()
+        else:
+            st.error("Document not found or not owned by this account.")
 
     st.divider()
+    if st.button("Clear chat"):
+        st.session_state.messages = []
+        st.rerun()
+    if st.button("Sign out"):
+        st.logout()
 
-    st.markdown(
-        """
-### 💡 Suggested Questions
+st.title("Legal Lenz")
+st.caption("Informational use only. This app does not provide legal advice.")
 
-- What is Article 21?
-- Explain Article 14
-- Summarize this document
-- What compensation is demanded?
-"""
-    )
-
-
-# -----------------------------------
-# DISPLAY CHAT
-# -----------------------------------
 for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message.get("sources"):
+            with st.expander("Sources"):
+                for source in message["sources"]:
+                    st.markdown(source_caption(source))
+                    st.text(source["text"][:900])
 
-    with st.chat_message(
-        message["role"]
-    ):
-
-        st.markdown(
-            f"""
-<div class="chat-card">
-{message["content"]}
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-
-# -----------------------------------
-# USER INPUT
-# -----------------------------------
-user_input = st.chat_input(
-    "Ask a legal question..."
-)
-
-
-# -----------------------------------
-# HANDLE QUERY
-# -----------------------------------
-if user_input:
-
-    st.session_state.messages.append({
-        "role": "user",
-        "content": user_input,
-    })
-
+question = st.chat_input("Ask about the Constitution, statutes, or selected uploads")
+if question:
+    st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
-
-        st.markdown(
-            f"""
-<div class="chat-card">
-{user_input}
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
+        st.markdown(question)
     with st.chat_message("assistant"):
-
-        with st.spinner(
-            "Analyzing legal context..."
-        ):
-
-            response = ask_question(
-                question=user_input,
-                session_id=SESSION_ID,
-                upload_db_path=(
-                    st.session_state.get(
-                        "latest_upload_db"
-                    )
-                ),
-            )
-
-            answer = response["answer"]
-
-            sources = response["sources"]
-
-            st.markdown(
-                f"""
-<div class="chat-card">
-{answer}
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-            # -----------------------------
-            # SOURCES
-            # -----------------------------
-            if sources:
-
-                with st.expander(
-                    "📚 View Sources"
-                ):
-
-                    for source in sources:
-
-                        metadata = (
-                            source.metadata
-                        )
-
-                        st.markdown(
-                            f"""
-<div class="source-card">
-
-<div class="source-title">
-{metadata.get("article")}
-</div>
-
-<div class="source-meta">
-📄 {metadata.get("source_name")}
-|
-📍 Page {metadata.get("page")}
-</div>
-
-<div>
-{source.page_content[:700]}...
-</div>
-
-</div>
-""",
-                            unsafe_allow_html=True,
-                        )
-
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer,
-    })
+        try:
+            with st.spinner("Retrieving context..."):
+                response = ask_question(email, st.session_state.selected_docs, question, st.session_state.messages[:-1])
+            st.markdown(response["answer"])
+            if response["sources"]:
+                with st.expander("Sources"):
+                    for source in response["sources"]:
+                        st.markdown(source_caption(source))
+                        st.text(source["text"][:900])
+        except Exception:
+            response = {"answer": "Retrieval or model call failed. Check database, quota, and model access.", "sources": []}
+            st.error(response["answer"])
+    st.session_state.messages.append({"role": "assistant", "content": response["answer"], "sources": response["sources"]})
