@@ -1,0 +1,12 @@
+.env
+.venv
+.git
+.pytest_cache
+__pycache__
+*.pyc
+application_default_credentials.json
+setup_adc.sh
+data/chroma
+data/pdfs/*.pdf
+test
+tests
