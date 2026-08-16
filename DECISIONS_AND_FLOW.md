@@ -130,6 +130,15 @@ This file records important project decisions: when they were made, where they a
 - **Reason:** Legal relevance depends on exact authority and lexical wording as well as semantic similarity; PostgreSQL already provides the needed search features.
 - **Consequence:** Natural questions add analysis and reranking calls, while exact questions skip analysis and every LLM failure has a deterministic retrieval fallback.
 
+### DEC-015: Persist approved-user chat sessions in PostgreSQL
+
+- **When:** 2026-08-16
+- **Status:** Active
+- **Where:** `app.py`, `rag/db.py`, `migrations/005_persistent_chats.sql`, `manage.py cleanup`
+- **Decision:** Store up to five active chat sessions per user, including messages and selected upload IDs, with 30-day inactivity expiry.
+- **Reason:** Users need chats to survive reloads and logins without adding another auth or storage service.
+- **Consequence:** Chat rows are owner-scoped, deleted chats cascade messages, and persisted citations omit source excerpts so private upload text still expires with the upload.
+
 ## Current Application Flow
 
 ### Startup
@@ -139,6 +148,7 @@ streamlit run app.py
   -> user signs in with Google OIDC
   -> app rejects emails not in APPROVED_EMAILS
   -> app uses ready shared Constitution/statutes and owned unexpired uploads from PostgreSQL
+  -> sidebar lists this user's active chat sessions from PostgreSQL
 ```
 
 ### PDF ingestion
@@ -172,7 +182,9 @@ manage.py ingest-statute PDF --act BNS|BNSS|BSA
 
 ```text
 User asks a question
-  -> chat history is read from st.session_state only
+  -> app creates a chat if none is active
+  -> active chat history and selected upload IDs are loaded from PostgreSQL for this email
+  -> selected upload IDs are revalidated against owned, ready, unexpired documents
   -> explicit Act/Section/Article references are parsed deterministically
   -> natural questions receive one structured Gemini legal-query analysis
   -> original and distinct rewritten queries are embedded with gemini-embedding-2
@@ -183,6 +195,20 @@ User asks a question
   -> exact chunks are preserved and final context is capped at 8 diverse chunks
   -> no Gemini answer call is made when context is empty
   -> the original question and authoritative text produce numbered citations and source details
+  -> user and assistant messages are saved to the current chat session
+  -> persisted sources store citation metadata only, not source excerpts
+```
+
+### Chat management
+
+```text
+User selects a chat
+  -> app loads messages and selected upload IDs owned by this email
+User creates a chat
+  -> database enforces at most five active chats for this email
+User renames or deletes a chat
+  -> SQL filters by both session ID and owner email
+  -> deleting a chat cascades its messages
 ```
 
 ### Cleanup
@@ -193,6 +219,7 @@ Cloud Run job runs daily
   -> deletes GCS object, ignoring already-missing objects
   -> deletes document row
   -> chunks cascade through foreign keys
+  -> deletes chat sessions inactive for 30 days
 ```
 
 ## New Decision Template

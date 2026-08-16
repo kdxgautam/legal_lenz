@@ -41,6 +41,9 @@ Only emails in `APPROVED_EMAILS` can enter the app after Google login.
 ## Operations
 
 ```bash
+set -a
+source .env
+set +a
 uv run python manage.py migrate
 uv run python manage.py ingest-constitution data/pdfs/constitution.pdf
 uv run python manage.py ingest-statute data/pdfs/bhartiya_nyay_sanhita.pdf --act BNS
@@ -52,6 +55,8 @@ uv run python evals/run_retrieval_eval.py --email you@example.com
 uv run pytest
 docker build .
 ```
+
+`manage.py migrate` applies numbered SQL files, including chat tables and search indexes. `manage.py cleanup` removes expired uploads and chat sessions inactive for 30 days.
 
 Deployment helpers:
 
@@ -65,7 +70,15 @@ IMAGE=gcr.io/project-3e52c857-15d9-4fe6-b2f/legal-lenz:SHA ./infra/cleanup-job.s
 
 Uploaded PDFs, metadata, and embeddings expire after seven days unless the user deletes them sooner. `manage.py cleanup` permanently deletes the GCS object and cascades database rows. Disable Cloud Storage soft deletion on the upload bucket so deletion is permanent.
 
-Constitution and statute documents have no owner and no expiry. Chat history is only `st.session_state`; logout, restart, session expiry, or Clear chat removes it.
+Constitution and statute documents have no owner and no expiry. Chat sessions are stored in PostgreSQL per approved email, capped at five active sessions, and expire after 30 days of inactivity. Persisted citations keep metadata only; source excerpts from private uploads are not stored in chat history.
+
+## Persistent Chats
+
+Each approved user can keep up to five active chats. The sidebar lets users create, switch, rename, and permanently delete chats. A chat stores messages, source citation metadata, and that chat's selected upload IDs, so switching chats restores the relevant document selection.
+
+User isolation is enforced in SQL: every chat read, write, rename, selection update, and delete includes the authenticated lowercase email. Expired, deleted, or foreign uploads are removed from restored selections and remain blocked by retrieval scope filters.
+
+Persisted source records intentionally omit source excerpts. Excerpts are shown only for the live answer response so private uploaded text still disappears when the upload expires or is deleted.
 
 ## Statute Indexing
 
@@ -107,4 +120,5 @@ These are measured results from 22 cases; the upload case was skipped because no
 5. Grant the Cloud Run service account Cloud SQL Client, Vertex AI User, Storage Object Admin on the bucket, and Secret Manager Secret Accessor.
 6. Run migration through a job, then index the Constitution and three statutes.
 7. Deploy one Cloud Run revision in `asia-south1`, smoke test auth/retrieval/upload/delete, then send traffic.
-8. Schedule the cleanup job daily and alert on Cloud Run errors, cleanup failures, Gemini failures, and Cloud SQL pressure.
+8. Smoke test chat create/switch/rename/delete and verify the five-chat limit for an approved email.
+9. Schedule the cleanup job daily and alert on Cloud Run errors, cleanup failures, Gemini failures, and Cloud SQL pressure.

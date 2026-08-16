@@ -112,8 +112,14 @@ def ingest_statute(path: str, act: str) -> None:
 
 def cleanup(limit: int) -> None:
     for doc in db.expired_documents(limit):
-        delete_object(doc["gcs_object"])
+        try:
+            delete_object(doc["gcs_object"])
+        except Exception as exc:
+            print(f"WARNING: GCS object could not be deleted: {exc}")
         db.delete_document_row(doc["id"])
+    deleted_chats = db.delete_expired_chats(limit)
+    if deleted_chats:
+        print(f"Deleted {deleted_chats} expired chats")
 
 
 def debug_retrieval(question: str, email: str, document_ids: list[str]) -> None:

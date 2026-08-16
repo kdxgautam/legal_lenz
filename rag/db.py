@@ -12,10 +12,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from sqlalchemy import create_engine, text
 
 from rag.config import (
+    CHAT_RETENTION_DAYS,
     DATABASE_URL,
     DB_NAME,
     DB_USER,
     INSTANCE_CONNECTION_NAME,
+    MAX_CHAT_SESSIONS,
     UPLOAD_RETENTION_DAYS,
 )
 
@@ -35,6 +37,10 @@ class Chunk:
     metadata: dict = field(default_factory=dict)
     distance: float | None = None
     lexical_score: float | None = None
+
+
+class ChatLimitError(ValueError):
+    pass
 
 
 def sqlalchemy_url(url: str) -> str:
@@ -207,6 +213,224 @@ def get_owned_document(owner_email: str, document_id: str) -> dict | None:
 def delete_document_row(document_id: str) -> None:
     with tx() as conn:
         conn.execute(text("DELETE FROM documents WHERE id = :id"), {"id": document_id})
+
+
+def title_from_question(question: str) -> str:
+    title = " ".join(question.split()).strip() or "New chat"
+    return title[:77] + "..." if len(title) > 80 else title
+
+
+def _active_chat_sql() -> str:
+    return f"last_activity_at > now() - interval '{CHAT_RETENTION_DAYS} days'"
+
+
+def _sanitize_sources(sources: list[dict] | None) -> list[dict]:
+    cleaned = []
+    for source in sources or []:
+        item = {key: value for key, value in source.items() if key != "text"}
+        item["metadata"] = item.get("metadata") or {}
+        cleaned.append(item)
+    return cleaned
+
+
+def _json_value(value, default):
+    if value is None:
+        return default
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _selected_upload_ids(conn, owner_email: str, selected_ids: list[str]) -> list[str]:
+    if not selected_ids:
+        return []
+    rows = conn.execute(
+        text(
+            """
+            SELECT id::text
+            FROM documents
+            WHERE owner_email = :email
+              AND type = 'upload'
+              AND status = 'ready'
+              AND expires_at > now()
+              AND id::text = ANY(:ids)
+            """
+        ),
+        {"email": owner_email.lower(), "ids": selected_ids},
+    )
+    allowed = {row[0] for row in rows}
+    return [doc_id for doc_id in selected_ids if doc_id in allowed]
+
+
+def list_chat_sessions(owner_email: str) -> list[dict]:
+    with engine().connect() as conn:
+        return [dict(row._mapping) for row in conn.execute(
+            text(
+                f"""
+                SELECT id::text, title, selected_document_ids, created_at, last_activity_at
+                FROM chat_sessions
+                WHERE owner_email = :email AND {_active_chat_sql()}
+                ORDER BY last_activity_at DESC
+                """
+            ),
+            {"email": owner_email.lower()},
+        )]
+
+
+def create_chat_session(owner_email: str, title: str = "New chat", selected_ids: list[str] | None = None) -> str:
+    email = owner_email.lower()
+    session_id = str(uuid.uuid4())
+    with tx() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:email))"), {"email": email})
+        count = conn.execute(
+            text(f"SELECT count(*) FROM chat_sessions WHERE owner_email = :email AND {_active_chat_sql()}"),
+            {"email": email},
+        ).scalar_one()
+        if count >= MAX_CHAT_SESSIONS:
+            raise ChatLimitError(f"Delete a chat before creating more than {MAX_CHAT_SESSIONS}.")
+        conn.execute(
+            text(
+                """
+                INSERT INTO chat_sessions (id, owner_email, title, selected_document_ids)
+                VALUES (:id, :email, :title, CAST(:selected_ids AS jsonb))
+                """
+            ),
+            {
+                "id": session_id,
+                "email": email,
+                "title": title_from_question(title),
+                "selected_ids": json.dumps(_selected_upload_ids(conn, email, selected_ids or [])),
+            },
+        )
+    return session_id
+
+
+def load_chat_session(owner_email: str, session_id: str) -> dict | None:
+    email = owner_email.lower()
+    with tx() as conn:
+        session = conn.execute(
+            text(
+                f"""
+                SELECT id::text, title, selected_document_ids, created_at, last_activity_at
+                FROM chat_sessions
+                WHERE id = :id AND owner_email = :email AND {_active_chat_sql()}
+                """
+            ),
+            {"id": session_id, "email": email},
+        ).first()
+        if not session:
+            return None
+        data = dict(session._mapping)
+        raw_selected_ids = _json_value(data["selected_document_ids"], [])
+        selected_ids = _selected_upload_ids(conn, email, raw_selected_ids)
+        if selected_ids != raw_selected_ids:
+            conn.execute(
+                text(
+                    """
+                    UPDATE chat_sessions
+                    SET selected_document_ids = CAST(:selected_ids AS jsonb)
+                    WHERE id = :id AND owner_email = :email
+                    """
+                ),
+                {"id": session_id, "email": email, "selected_ids": json.dumps(selected_ids)},
+            )
+        messages = [
+            {"role": row.role, "content": row.content, "sources": _json_value(row.sources, [])}
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT role, content, sources
+                    FROM chat_messages
+                    WHERE session_id = :id
+                    ORDER BY id
+                    """
+                ),
+                {"id": session_id},
+            )
+        ]
+    return data | {"selected_document_ids": selected_ids, "messages": messages}
+
+
+def rename_chat_session(owner_email: str, session_id: str, title: str) -> None:
+    cleaned = title_from_question(title)
+    with tx() as conn:
+        conn.execute(
+            text("UPDATE chat_sessions SET title = :title WHERE id = :id AND owner_email = :email"),
+            {"id": session_id, "email": owner_email.lower(), "title": cleaned},
+        )
+
+
+def update_chat_selected_documents(owner_email: str, session_id: str, selected_ids: list[str]) -> list[str]:
+    email = owner_email.lower()
+    with tx() as conn:
+        selected_ids = _selected_upload_ids(conn, email, selected_ids)
+        conn.execute(
+            text(
+                """
+                UPDATE chat_sessions
+                SET selected_document_ids = CAST(:selected_ids AS jsonb)
+                WHERE id = :id AND owner_email = :email
+                """
+            ),
+            {"id": session_id, "email": email, "selected_ids": json.dumps(selected_ids)},
+        )
+    return selected_ids
+
+
+def append_chat_message(
+    owner_email: str,
+    session_id: str,
+    role: str,
+    content: str,
+    sources: list[dict] | None = None,
+) -> None:
+    with tx() as conn:
+        owned = conn.execute(
+            text("SELECT 1 FROM chat_sessions WHERE id = :id AND owner_email = :email"),
+            {"id": session_id, "email": owner_email.lower()},
+        ).first()
+        if not owned:
+            raise ValueError("Chat session not found.")
+        conn.execute(
+            text(
+                """
+                INSERT INTO chat_messages (session_id, role, content, sources)
+                VALUES (:id, :role, :content, CAST(:sources AS jsonb))
+                """
+            ),
+            {
+                "id": session_id,
+                "role": role,
+                "content": content,
+                "sources": json.dumps(_sanitize_sources(sources)),
+            },
+        )
+        conn.execute(text("UPDATE chat_sessions SET last_activity_at = now() WHERE id = :id"), {"id": session_id})
+
+
+def delete_chat_session(owner_email: str, session_id: str) -> None:
+    with tx() as conn:
+        conn.execute(
+            text("DELETE FROM chat_sessions WHERE id = :id AND owner_email = :email"),
+            {"id": session_id, "email": owner_email.lower()},
+        )
+
+
+def delete_expired_chats(limit: int = 100) -> int:
+    with tx() as conn:
+        result = conn.execute(
+            text(
+                f"""
+                DELETE FROM chat_sessions
+                WHERE id IN (
+                    SELECT id FROM chat_sessions
+                    WHERE NOT ({_active_chat_sql()})
+                    ORDER BY last_activity_at
+                    LIMIT :limit
+                )
+                """
+            ),
+            {"limit": limit},
+        )
+    return result.rowcount or 0
 
 
 def expired_documents(limit: int = 100) -> list[dict]:

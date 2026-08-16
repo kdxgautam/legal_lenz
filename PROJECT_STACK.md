@@ -4,7 +4,7 @@ Keep this file updated whenever a model, managed service, storage resource, vect
 
 | Area | Current choice | Version / setting | Why we use it |
 | --- | --- | --- | --- |
-| App runtime | Streamlit | `streamlit[auth]` from `pyproject.toml` | Fast Python UI with native chat, upload, session state, and OIDC login. |
+| App runtime | Streamlit | `streamlit[auth]` from `pyproject.toml` | Fast Python UI with native chat, upload, sidebar controls, and OIDC login. |
 | Auth | Streamlit OIDC with Google | `.streamlit/secrets.toml`, `APPROVED_EMAILS` | Google proves identity; allowlist keeps the app controlled for approved users only. |
 | Generation model | Gemini Flash-Lite | `gemini-3.5-flash-lite` | Low-cost Google-hosted answer generation using ADC/Vertex AI. |
 | Embedding model | Gemini Embedding | `gemini-embedding-2` | Managed embeddings on Google Cloud; avoids local Torch/SentenceTransformer downloads. |
@@ -17,6 +17,8 @@ Keep this file updated whenever a model, managed service, storage resource, vect
 | Production database option | Cloud SQL PostgreSQL | `INSTANCE_CONNECTION_NAME`, `DB_USER`, `DB_NAME` | Google-managed production option for Cloud Run with IAM/service-account access. |
 | PDF storage | Private Cloud Storage bucket | `UPLOAD_BUCKET` | Cloud Run disk is disposable; PDFs need private managed object storage. |
 | Upload retention | Hard delete | 7 days | Minimize private document retention and storage cost. |
+| Chat history | PostgreSQL tables | 5 active chats/user, 30-day inactivity expiry | Keeps user conversations available across logins without storing private source excerpts. |
+| Chat privacy | Persist metadata only | no saved source excerpts | Keeps citation context while preserving the seven-day private upload deletion guarantee. |
 | PDF parser | PyMuPDF | `pymupdf` | Reliable PDF text extraction and page counting with one dependency. |
 | Text splitter | LangChain text splitter only | `langchain-text-splitters` | Keeps chunking utility without broad LangChain provider packages. |
 | Statute parser | PyMuPDF blocks + standard-library state machine | BNS 358, BNSS 531, BSA 170 sections | Preserves Act, chapter, section, subsection, and page ranges without OCR or another parsing dependency. |

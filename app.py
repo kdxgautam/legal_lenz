@@ -2,7 +2,20 @@ import streamlit as st
 
 from rag.chat import ask_question
 from rag.config import APPROVED_EMAILS
-from rag.db import delete_document_row, get_owned_document, list_documents
+from rag.db import (
+    ChatLimitError,
+    append_chat_message,
+    create_chat_session,
+    delete_chat_session,
+    delete_document_row,
+    get_owned_document,
+    list_chat_sessions,
+    list_documents,
+    load_chat_session,
+    rename_chat_session,
+    title_from_question,
+    update_chat_selected_documents,
+)
 from rag.ingest import IngestError, ingest_pdf
 from rag.storage import delete_object
 
@@ -51,12 +64,78 @@ if email not in APPROVED_EMAILS:
         st.logout()
     st.stop()
 
+def load_chat(chat_id: str | None) -> None:
+    if not chat_id:
+        st.session_state.current_chat_id = None
+        st.session_state.current_chat_title = ""
+        st.session_state.messages = []
+        st.session_state.selected_docs = []
+        return
+    chat = load_chat_session(email, chat_id)
+    if not chat:
+        load_chat(None)
+        return
+    st.session_state.current_chat_id = chat["id"]
+    st.session_state.current_chat_title = chat["title"]
+    st.session_state.messages = chat["messages"]
+    st.session_state.selected_docs = chat["selected_document_ids"]
+
+
+if "current_chat_id" not in st.session_state:
+    st.session_state.current_chat_id = None
+if "current_chat_title" not in st.session_state:
+    st.session_state.current_chat_title = ""
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "selected_docs" not in st.session_state:
     st.session_state.selected_docs = []
 
 with st.sidebar:
+    st.subheader("Chats")
+    try:
+        chats = list_chat_sessions(email)
+    except Exception as exc:
+        st.error("Chats are not available. Run migrations and check database configuration.")
+        st.caption(str(exc))
+        chats = []
+
+    chat_ids = [chat["id"] for chat in chats]
+    if st.session_state.current_chat_id not in chat_ids:
+        load_chat(chat_ids[0] if chat_ids else None)
+
+    if chat_ids:
+        chosen_chat = st.selectbox(
+            "Chat session",
+            options=chat_ids,
+            format_func=lambda chat_id: next(chat["title"] for chat in chats if chat["id"] == chat_id),
+            index=chat_ids.index(st.session_state.current_chat_id),
+        )
+        if chosen_chat != st.session_state.current_chat_id:
+            load_chat(chosen_chat)
+            st.rerun()
+
+    if st.button("New chat", disabled=len(chats) >= 5):
+        try:
+            chat_id = create_chat_session(email, "New chat")
+            load_chat(chat_id)
+            st.rerun()
+        except ChatLimitError as exc:
+            st.warning(str(exc))
+    if len(chats) >= 5:
+        st.caption("Delete a chat before creating another.")
+
+    if st.session_state.current_chat_id:
+        new_title = st.text_input("Rename chat", value=st.session_state.current_chat_title)
+        if st.button("Rename", disabled=not new_title.strip()):
+            rename_chat_session(email, st.session_state.current_chat_id, new_title)
+            st.session_state.current_chat_title = title_from_question(new_title)
+            st.rerun()
+        if st.button("Delete chat"):
+            delete_chat_session(email, st.session_state.current_chat_id)
+            load_chat(None)
+            st.rerun()
+
+    st.divider()
     st.subheader("Documents")
     try:
         docs = list_documents(email)
@@ -67,12 +146,20 @@ with st.sidebar:
 
     ready_docs = [doc for doc in docs if doc["status"] == "ready"]
     labels = {doc["id"]: f"{doc['original_filename']} ({doc['type']})" for doc in ready_docs}
-    st.session_state.selected_docs = st.multiselect(
+    selected_docs = st.multiselect(
         "Selected uploads",
         options=[doc["id"] for doc in ready_docs if doc["type"] == "upload"],
         format_func=lambda doc_id: labels.get(doc_id, doc_id),
         default=[doc_id for doc_id in st.session_state.selected_docs if doc_id in labels],
     )
+    if selected_docs != st.session_state.selected_docs:
+        st.session_state.selected_docs = selected_docs
+        if st.session_state.current_chat_id:
+            st.session_state.selected_docs = update_chat_selected_documents(
+                email,
+                st.session_state.current_chat_id,
+                selected_docs,
+            )
 
     upload = st.file_uploader("Upload PDF", type=["pdf"])
     if st.button("Ingest PDF", type="primary"):
@@ -106,10 +193,8 @@ with st.sidebar:
             st.error("Document not found or not owned by this account.")
 
     st.divider()
-    if st.button("Clear chat"):
-        st.session_state.messages = []
-        st.rerun()
     if st.button("Sign out"):
+        load_chat(None)
         st.logout()
 
 st.title("Legal Lenz")
@@ -122,11 +207,23 @@ for message in st.session_state.messages:
             with st.expander("Sources"):
                 for source in message["sources"]:
                     st.markdown(source_caption(source))
-                    st.text(source["text"][:900])
+                    if source.get("text"):
+                        st.text(source["text"][:900])
 
 question = st.chat_input("Ask about the Constitution, statutes, or selected uploads")
 if question:
+    if not st.session_state.current_chat_id:
+        try:
+            load_chat(create_chat_session(email, title_from_question(question), st.session_state.selected_docs))
+        except ChatLimitError as exc:
+            st.warning(str(exc))
+            st.stop()
+    elif not st.session_state.messages and st.session_state.current_chat_title == "New chat":
+        rename_chat_session(email, st.session_state.current_chat_id, question)
+        st.session_state.current_chat_title = title_from_question(question)
+
     st.session_state.messages.append({"role": "user", "content": question})
+    append_chat_message(email, st.session_state.current_chat_id, "user", question)
     with st.chat_message("user"):
         st.markdown(question)
     with st.chat_message("assistant"):
@@ -138,8 +235,10 @@ if question:
                 with st.expander("Sources"):
                     for source in response["sources"]:
                         st.markdown(source_caption(source))
-                        st.text(source["text"][:900])
+                        if source.get("text"):
+                            st.text(source["text"][:900])
         except Exception:
             response = {"answer": "Retrieval or model call failed. Check database, quota, and model access.", "sources": []}
             st.error(response["answer"])
     st.session_state.messages.append({"role": "assistant", "content": response["answer"], "sources": response["sources"]})
+    append_chat_message(email, st.session_state.current_chat_id, "assistant", response["answer"], response["sources"])
