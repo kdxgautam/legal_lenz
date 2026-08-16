@@ -5,7 +5,7 @@ Keep this file updated whenever a model, managed service, storage resource, vect
 | Area | Current choice | Version / setting | Why we use it |
 | --- | --- | --- | --- |
 | App runtime | Streamlit | `streamlit[auth]` from `pyproject.toml` | Fast Python UI with native chat, upload, sidebar controls, and OIDC login. |
-| Auth | Streamlit OIDC with Google | `.streamlit/secrets.toml`, `APPROVED_EMAILS` | Google proves identity; allowlist keeps the app controlled for approved users only. |
+| Auth | Streamlit OIDC with Google | `.streamlit/secrets.toml` | Google proves identity; any Google-authenticated user can enter. |
 | Generation model | Gemini Flash-Lite | `gemini-3.5-flash-lite` | Low-cost Google-hosted answer generation using ADC/Vertex AI. |
 | Embedding model | Gemini Embedding | `gemini-embedding-2` | Managed embeddings on Google Cloud; avoids local Torch/SentenceTransformer downloads. |
 | Embedding size | pgvector vectors | `vector(768)` | 768 dimensions keeps storage/cost lower while matching Gemini embedding support. |

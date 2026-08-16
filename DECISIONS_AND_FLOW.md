@@ -97,7 +97,7 @@ This file records important project decisions: when they were made, where they a
 ### DEC-011: Require Google OIDC and approved-email allowlist
 
 - **When:** 2026-08-15
-- **Status:** Active
+- **Status:** Superseded by DEC-016
 - **Where:** `app.py`, `.streamlit/secrets.toml`, `APPROVED_EMAILS`
 - **Decision:** Use native `st.login()`, `st.user`, and `st.logout()`; deny emails not in `APPROVED_EMAILS`.
 - **Reason:** This is a controlled app, not anonymous public access.
@@ -130,14 +130,23 @@ This file records important project decisions: when they were made, where they a
 - **Reason:** Legal relevance depends on exact authority and lexical wording as well as semantic similarity; PostgreSQL already provides the needed search features.
 - **Consequence:** Natural questions add analysis and reranking calls, while exact questions skip analysis and every LLM failure has a deterministic retrieval fallback.
 
-### DEC-015: Persist approved-user chat sessions in PostgreSQL
+### DEC-015: Persist authenticated-user chat sessions in PostgreSQL
 
 - **When:** 2026-08-16
 - **Status:** Active
 - **Where:** `app.py`, `rag/db.py`, `migrations/005_persistent_chats.sql`, `manage.py cleanup`
-- **Decision:** Store up to five active chat sessions per user, including messages and selected upload IDs, with 30-day inactivity expiry.
+- **Decision:** Store up to five active chat sessions per authenticated user, including messages and selected upload IDs, with 30-day inactivity expiry.
 - **Reason:** Users need chats to survive reloads and logins without adding another auth or storage service.
 - **Consequence:** Chat rows are owner-scoped, deleted chats cascade messages, and persisted citations omit source excerpts so private upload text still expires with the upload.
+
+### DEC-016: Allow any Google-authenticated user
+
+- **When:** 2026-08-16
+- **Status:** Active
+- **Where:** `app.py`, `.streamlit/secrets.toml`
+- **Decision:** Keep Google OIDC login but remove the `APPROVED_EMAILS` allowlist gate.
+- **Reason:** The app should be usable by anyone who can authenticate with a Google account.
+- **Consequence:** User data remains isolated by authenticated email, but usage is no longer limited to a curated list.
 
 ## Current Application Flow
 
@@ -146,7 +155,7 @@ This file records important project decisions: when they were made, where they a
 ```text
 streamlit run app.py
   -> user signs in with Google OIDC
-  -> app rejects emails not in APPROVED_EMAILS
+  -> any Google-authenticated email can enter
   -> app uses ready shared Constitution/statutes and owned unexpired uploads from PostgreSQL
   -> sidebar lists this user's active chat sessions from PostgreSQL
 ```

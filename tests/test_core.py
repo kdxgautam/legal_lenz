@@ -1,6 +1,6 @@
 import pytest
 
-from rag import chat, config
+from rag import chat
 from rag.db import Chunk
 from rag.ingest import IngestError, extract_articles, safe_filename, validate_pdf
 from rag.retriever import (
@@ -180,8 +180,3 @@ def test_answer_receives_original_question(monkeypatch):
     monkeypatch.setattr(chat, "generate_text", lambda prompt: prompts.append(prompt) or "answer [1]")
     chat.ask_question("a@example.com", [], "What did I actually ask?", [])
     assert "Original user question:\nWhat did I actually ask?" in prompts[0]
-
-
-def test_allowlist_is_lowercase(monkeypatch):
-    monkeypatch.setattr(config, "APPROVED_EMAILS", {"user@example.com"})
-    assert "user@example.com" in config.APPROVED_EMAILS

@@ -20,12 +20,6 @@ INSTANCE_CONNECTION_NAME = os.getenv("INSTANCE_CONNECTION_NAME", "")
 DB_NAME = os.getenv("DB_NAME", "legal_lenz")
 DB_USER = os.getenv("DB_USER", "")
 
-APPROVED_EMAILS = {
-    email.strip().lower()
-    for email in os.getenv("APPROVED_EMAILS", "").split(",")
-    if email.strip()
-}
-
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_PAGES = 300
 UPLOAD_RETENTION_DAYS = 7

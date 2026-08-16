@@ -1,7 +1,6 @@
 import streamlit as st
 
 from rag.chat import ask_question
-from rag.config import APPROVED_EMAILS
 from rag.db import (
     ChatLimitError,
     append_chat_message,
@@ -56,12 +55,6 @@ if not email:
     st.caption("Controlled legal document assistant.")
     if st.button("Sign in with Google", type="primary"):
         st.login()
-    st.stop()
-
-if email not in APPROVED_EMAILS:
-    st.error("This Google account is authenticated but not approved for Legal Lenz.")
-    if st.button("Sign out"):
-        st.logout()
     st.stop()
 
 def load_chat(chat_id: str | None) -> None:

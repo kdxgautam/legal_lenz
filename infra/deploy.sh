@@ -14,5 +14,5 @@ gcloud run deploy "${SERVICE}" \
   --service-account "${SERVICE}@${PROJECT_ID}.iam.gserviceaccount.com" \
   --allow-unauthenticated \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=true" \
-  --set-env-vars "INSTANCE_CONNECTION_NAME=${INSTANCE_CONNECTION_NAME},DB_NAME=${DB_NAME},DB_USER=${DB_USER},UPLOAD_BUCKET=${UPLOAD_BUCKET},APPROVED_EMAILS=${APPROVED_EMAILS}" \
+  --set-env-vars "INSTANCE_CONNECTION_NAME=${INSTANCE_CONNECTION_NAME},DB_NAME=${DB_NAME},DB_USER=${DB_USER},UPLOAD_BUCKET=${UPLOAD_BUCKET}" \
   --set-secrets "/app/.streamlit/secrets.toml=legal-lenz-streamlit-secrets:latest"

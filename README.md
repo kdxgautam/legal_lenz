@@ -1,6 +1,6 @@
 # Legal Lenz
 
-Controlled Streamlit RAG service for approved Google users. It stores PDFs in private Cloud Storage, stores metadata/chunks/pgvector embeddings in PostgreSQL, and uses Gemini through ADC. The student setup uses Neon; Cloud SQL remains the Cloud Run production option.
+Streamlit RAG service for Google-authenticated users. It stores PDFs in private Cloud Storage, stores metadata/chunks/pgvector embeddings in PostgreSQL, and uses Gemini through ADC. The student setup uses Neon; Cloud SQL remains the Cloud Run production option.
 
 ## Local Setup
 
@@ -35,7 +35,7 @@ client_secret = "GOOGLE_OIDC_CLIENT_SECRET"
 server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
 ```
 
-Only emails in `APPROVED_EMAILS` can enter the app after Google login.
+Any Google-authenticated user can enter the app.
 
 ## Streamlit Cloud
 
@@ -48,7 +48,6 @@ GOOGLE_CLOUD_PROJECT = "project-3e52c857-15d9-4fe6-b2f"
 GOOGLE_CLOUD_LOCATION = "global"
 DATABASE_URL = "postgresql://USER:PASSWORD@HOST/neondb?sslmode=require&channel_binding=require"
 UPLOAD_BUCKET = "your-private-upload-bucket"
-APPROVED_EMAILS = "you@example.com"
 
 [auth]
 redirect_uri = "https://legal-lenz.streamlit.app/oauth2callback"
@@ -82,7 +81,7 @@ Deployment helpers:
 
 ```bash
 UPLOAD_BUCKET=legal-lenz-private ./infra/provision.sh
-INSTANCE_CONNECTION_NAME=... DB_NAME=legal_lenz DB_USER=... UPLOAD_BUCKET=... APPROVED_EMAILS=... ./infra/deploy.sh
+INSTANCE_CONNECTION_NAME=... DB_NAME=legal_lenz DB_USER=... UPLOAD_BUCKET=... ./infra/deploy.sh
 IMAGE=gcr.io/project-3e52c857-15d9-4fe6-b2f/legal-lenz:SHA ./infra/cleanup-job.sh
 ```
 
@@ -90,11 +89,11 @@ IMAGE=gcr.io/project-3e52c857-15d9-4fe6-b2f/legal-lenz:SHA ./infra/cleanup-job.s
 
 Uploaded PDFs, metadata, and embeddings expire after seven days unless the user deletes them sooner. `manage.py cleanup` permanently deletes the GCS object and cascades database rows. Disable Cloud Storage soft deletion on the upload bucket so deletion is permanent.
 
-Constitution and statute documents have no owner and no expiry. Chat sessions are stored in PostgreSQL per approved email, capped at five active sessions, and expire after 30 days of inactivity. Persisted citations keep metadata only; source excerpts from private uploads are not stored in chat history.
+Constitution and statute documents have no owner and no expiry. Chat sessions are stored in PostgreSQL per authenticated email, capped at five active sessions, and expire after 30 days of inactivity. Persisted citations keep metadata only; source excerpts from private uploads are not stored in chat history.
 
 ## Persistent Chats
 
-Each approved user can keep up to five active chats. The sidebar lets users create, switch, rename, and permanently delete chats. A chat stores messages, source citation metadata, and that chat's selected upload IDs, so switching chats restores the relevant document selection.
+Each authenticated user can keep up to five active chats. The sidebar lets users create, switch, rename, and permanently delete chats. A chat stores messages, source citation metadata, and that chat's selected upload IDs, so switching chats restores the relevant document selection.
 
 User isolation is enforced in SQL: every chat read, write, rename, selection update, and delete includes the authenticated lowercase email. Expired, deleted, or foreign uploads are removed from restored selections and remain blocked by retrieval scope filters.
 
@@ -140,5 +139,5 @@ These are measured results from 22 cases; the upload case was skipped because no
 5. Grant the Cloud Run service account Cloud SQL Client, Vertex AI User, Storage Object Admin on the bucket, and Secret Manager Secret Accessor.
 6. Run migration through a job, then index the Constitution and three statutes.
 7. Deploy one Cloud Run revision in `asia-south1`, smoke test auth/retrieval/upload/delete, then send traffic.
-8. Smoke test chat create/switch/rename/delete and verify the five-chat limit for an approved email.
+8. Smoke test Google login, chat create/switch/rename/delete, and the five-chat limit for a signed-in email.
 9. Schedule the cleanup job daily and alert on Cloud Run errors, cleanup failures, Gemini failures, and Cloud SQL pressure.
