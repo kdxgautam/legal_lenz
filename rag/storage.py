@@ -1,13 +1,14 @@
 from google.cloud import storage
 from google.api_core.exceptions import NotFound
 
-from rag.config import UPLOAD_BUCKET
+from rag.config import PROJECT_ID, UPLOAD_BUCKET
+from rag.google_auth import credentials
 
 
 def _bucket():
     if not UPLOAD_BUCKET:
         raise RuntimeError("Set UPLOAD_BUCKET.")
-    return storage.Client().bucket(UPLOAD_BUCKET)
+    return storage.Client(project=PROJECT_ID, credentials=credentials()).bucket(UPLOAD_BUCKET)
 
 
 def upload_pdf(data: bytes, object_name: str) -> None:

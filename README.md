@@ -20,6 +20,8 @@ uv run streamlit run app.py
 
 For local Google ADC, keep `application_default_credentials.json` in this folder. It is ignored by Git.
 
+For Streamlit Cloud, set `GOOGLE_SERVICE_ACCOUNT_JSON` in app secrets instead of uploading `application_default_credentials.json`.
+
 ## Streamlit Auth
 
 Create `.streamlit/secrets.toml` locally or mount it from Secret Manager in Cloud Run:
@@ -34,6 +36,27 @@ server_metadata_url = "https://accounts.google.com/.well-known/openid-configurat
 ```
 
 Only emails in `APPROVED_EMAILS` can enter the app after Google login.
+
+## Streamlit Cloud
+
+Add root-level environment secrets plus the auth block in Streamlit Cloud:
+
+```toml
+GOOGLE_SERVICE_ACCOUNT_JSON = '''{"type":"service_account","project_id":"project-3e52c857-15d9-4fe6-b2f","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"legal-lenz@project-3e52c857-15d9-4fe6-b2f.iam.gserviceaccount.com","client_id":"...","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_x509_cert_url":"...","universe_domain":"googleapis.com"}'''
+GOOGLE_GENAI_USE_VERTEXAI = "true"
+GOOGLE_CLOUD_PROJECT = "project-3e52c857-15d9-4fe6-b2f"
+GOOGLE_CLOUD_LOCATION = "global"
+DATABASE_URL = "postgresql://USER:PASSWORD@HOST/neondb?sslmode=require&channel_binding=require"
+UPLOAD_BUCKET = "your-private-upload-bucket"
+APPROVED_EMAILS = "you@example.com"
+
+[auth]
+redirect_uri = "https://legal-lenz.streamlit.app/oauth2callback"
+cookie_secret = "replace-with-long-random-secret"
+client_id = "GOOGLE_OIDC_CLIENT_ID"
+client_secret = "GOOGLE_OIDC_CLIENT_SECRET"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
 
 ## Operations
 

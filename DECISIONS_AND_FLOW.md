@@ -52,11 +52,11 @@ This file records important project decisions: when they were made, where they a
 ### DEC-006: Keep Google ADC credentials local to the project
 
 - **When:** 2026-08-14
-- **Status:** Active for local development only
-- **Where:** `application_default_credentials.json`, `.gitignore`
-- **Decision:** Keep local ADC in the project folder and exclude it from Git.
-- **Reason:** Local Google client libraries can authenticate without global credential setup.
-- **Consequence:** Cloud Run uses its service account instead.
+- **Status:** Active
+- **Where:** `application_default_credentials.json`, `.gitignore`, `GOOGLE_SERVICE_ACCOUNT_JSON`
+- **Decision:** Keep local ADC in the project folder for development and use a service-account JSON secret on Streamlit Cloud.
+- **Reason:** Local Google client libraries can authenticate without global setup, while Streamlit Cloud has no ambient Google ADC.
+- **Consequence:** Cloud Run can still use its service account; Streamlit Cloud must receive `GOOGLE_SERVICE_ACCOUNT_JSON` as a secret.
 
 ### DEC-007: Use Python 3.12 and one dependency source
 

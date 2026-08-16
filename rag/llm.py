@@ -5,12 +5,14 @@ from google import genai
 from google.genai import types
 
 from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, GENERATION_MODEL, LOCATION, PROJECT_ID
+from rag.google_auth import credentials
 
 
 @cache
 def client():
     return genai.Client(
         vertexai=True,
+        credentials=credentials(),
         project=PROJECT_ID,
         location=LOCATION,
         http_options=types.HttpOptions(api_version="v1"),

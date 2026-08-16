@@ -23,7 +23,7 @@ Keep this file updated whenever a model, managed service, storage resource, vect
 | Text splitter | LangChain text splitter only | `langchain-text-splitters` | Keeps chunking utility without broad LangChain provider packages. |
 | Statute parser | PyMuPDF blocks + standard-library state machine | BNS 358, BNSS 531, BSA 170 sections | Preserves Act, chapter, section, subsection, and page ranges without OCR or another parsing dependency. |
 | Local credentials | Google ADC JSON | `application_default_credentials.json` | Lets local Gemini/GCS calls authenticate; ignored by Git. |
-| Production credentials | Cloud Run service account | ADC from runtime | No credential file in container; Google-managed identity is safer. |
+| Production credentials | Cloud Run service account or Streamlit secret | ADC from runtime or `GOOGLE_SERVICE_ACCOUNT_JSON` | Cloud Run uses managed identity; Streamlit Cloud passes one service-account JSON secret to Gemini and Storage. |
 | Container | Docker | `python:3.12-slim` | Small boring Python base image for Cloud Run. |
 | Dependency manager | uv | `pyproject.toml` + `uv.lock` | One dependency source with reproducible installs. |
 
