@@ -163,23 +163,7 @@ def _fts_query(analysis: LegalQueryAnalysis) -> str:
 
 
 def _lexical_search(owner_email: str, selected_ids: list[str], analysis: LegalQueryAnalysis) -> list[db.Chunk]:
-    chunks = []
-    seen = set()
-    for keyword in analysis.keywords:
-        query = f'"{keyword.replace(chr(34), " ").strip()}"'
-        for chunk in db.full_text_search(owner_email, selected_ids, query, 2):
-            if chunk.id not in seen:
-                seen.add(chunk.id)
-                chunks.append(chunk)
-            if len(chunks) == FTS_K:
-                return chunks
-    for chunk in db.full_text_search(owner_email, selected_ids, _fts_query(analysis), FTS_K):
-        if chunk.id not in seen:
-            seen.add(chunk.id)
-            chunks.append(chunk)
-        if len(chunks) == FTS_K:
-            break
-    return chunks
+    return db.full_text_search(owner_email, selected_ids, _fts_query(analysis), FTS_K)
 
 
 def analyze_query(question: str, history: list[dict] | None = None) -> LegalQueryAnalysis:
@@ -265,6 +249,8 @@ def rerank_candidates(
 ) -> tuple[list[RetrievalCandidate], bool]:
     if not candidates:
         return [], False
+    if RERANK_CANDIDATES <= 0:
+        return candidates, True
     initial = list(candidates[:RERANK_CANDIDATES])
     required = []
     for act in analysis.acts:
@@ -367,6 +353,25 @@ def retrieve_with_trace(
     history: list[dict] | None = None,
 ) -> RetrievalTrace:
     analysis = analyze_query(question, history)
+    exact = db.exact_search(
+        owner_email,
+        selected_ids,
+        [(ref.act_short_name, ref.section_number) for ref in analysis.exact_statute_references],
+        extract_article_numbers(question),
+        FINAL_CONTEXT_K,
+    )
+    if analysis.exact_reference_detected and exact:
+        fused = merge_candidates({"original": [], "rewrite": [], "full_text": [], "exact": exact})
+        exact_candidates = [candidate for candidate in fused if candidate.exact_match]
+        final = select_context(fused, exact_candidates)
+        return RetrievalTrace(
+            analysis=analysis,
+            exact=exact,
+            fused=fused,
+            reranked=fused,
+            final=final,
+        )
+
     queries = list(dict.fromkeys(
         query.strip() for query in (question, analysis.search_query) if query.strip()
     ))
@@ -376,13 +381,6 @@ def retrieve_with_trace(
     if len(queries) > 1:
         rewrite = db.vector_search(owner_email, selected_ids, embeddings[1], VECTOR_REWRITE_K)
     full_text = _lexical_search(owner_email, selected_ids, analysis)
-    exact = db.exact_search(
-        owner_email,
-        selected_ids,
-        [(ref.act_short_name, ref.section_number) for ref in analysis.exact_statute_references],
-        extract_article_numbers(question),
-        FINAL_CONTEXT_K,
-    )
     fused = merge_candidates({
         "original": original,
         "rewrite": rewrite,

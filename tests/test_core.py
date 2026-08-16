@@ -118,6 +118,31 @@ def test_original_and_rewrite_vectors_execute(monkeypatch):
     assert {item.id for item in trace.final} == {"original", "rewrite"}
 
 
+def test_exact_retrieval_skips_slow_paths(monkeypatch):
+    exact = chunk("exact", "BNS", "303")
+    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args: [exact])
+    monkeypatch.setattr("rag.retriever.embed_texts", lambda *_: pytest.fail("exact query should not embed"))
+    monkeypatch.setattr("rag.retriever.db.vector_search", lambda *_: pytest.fail("exact query should not vector search"))
+    monkeypatch.setattr("rag.retriever.db.full_text_search", lambda *_: pytest.fail("exact query should not FTS"))
+    monkeypatch.setattr("rag.retriever.rerank_candidates", lambda *_: pytest.fail("exact query should not rerank"))
+    trace = retrieve_with_trace("a@example.com", [], "What does Section 303 of BNS say?")
+    assert [item.id for item in trace.final] == ["exact"]
+
+
+def test_lexical_search_runs_once(monkeypatch):
+    monkeypatch.setattr("rag.retriever.analyze_query", lambda *_: LegalQueryAnalysis(
+        "q", "arrest theft", keywords=["arrest", "theft"]
+    ))
+    monkeypatch.setattr("rag.retriever.embed_texts", lambda texts, _: [[0.0] for _ in texts])
+    monkeypatch.setattr("rag.retriever.db.vector_search", lambda *args: [])
+    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args: [])
+    monkeypatch.setattr("rag.retriever.rerank_candidates", lambda q, a, c: (c, False))
+    calls = []
+    monkeypatch.setattr("rag.retriever.db.full_text_search", lambda *args: calls.append(args[2]) or [])
+    retrieve_with_trace("a@example.com", [], "q")
+    assert calls == ['"arrest" OR "theft"']
+
+
 def test_generic_filename_is_sanitized():
     assert safe_filename("../../secret.pdf") == "secret.pdf"
     assert safe_filename("") == "document.pdf"
