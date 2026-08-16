@@ -6,13 +6,10 @@ Controlled Streamlit RAG service for approved Google users. It stores PDFs in pr
 
 ```bash
 uv sync
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/application_default_credentials.json"
-export GOOGLE_GENAI_USE_VERTEXAI=true
-export GOOGLE_CLOUD_PROJECT=project-3e52c857-15d9-4fe6-b2f
-export GOOGLE_CLOUD_LOCATION=global
-export DATABASE_URL="postgresql+pg8000://user:password@host:5432/legal_lenz"
-export UPLOAD_BUCKET="your-private-upload-bucket"
-export APPROVED_EMAILS="you@example.com"
+cp .env.example .env
+set -a
+source .env
+set +a
 uv run python manage.py migrate
 uv run python manage.py ingest-constitution data/pdfs/constitution.pdf
 uv run python manage.py ingest-statute data/pdfs/bhartiya_nyay_sanhita.pdf --act BNS
