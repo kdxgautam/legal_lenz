@@ -21,10 +21,17 @@ PDFS = {
 }
 
 
+def open_statute_pdf(act):
+    path = Path("data/pdfs") / PDFS[act]
+    if not path.exists():
+        pytest.skip(f"Optional statute corpus is unavailable: {path}")
+    return fitz.open(path)
+
+
 @pytest.mark.parametrize("act", ["BNS", "BNSS", "BSA"])
 def test_real_statute_structure_matches_expected_counts(act):
     definition = STATUTES[act]
-    with fitz.open(Path("data/pdfs") / PDFS[act]) as document:
+    with open_statute_pdf(act) as document:
         units, report = extract_statute_structure(document, definition)
 
     assert report.sections_detected == definition.final_section
@@ -34,7 +41,7 @@ def test_real_statute_structure_matches_expected_counts(act):
 
 
 def test_bns_section_303_keeps_legal_metadata_and_subsections():
-    with fitz.open(Path("data/pdfs") / PDFS["BNS"]) as document:
+    with open_statute_pdf("BNS") as document:
         units, _ = extract_statute_structure(document, STATUTES["BNS"])
 
     section = units[302]
@@ -48,9 +55,9 @@ def test_bns_section_303_keeps_legal_metadata_and_subsections():
 
 
 def test_bsa_margin_title_and_bns_irregular_section_are_recovered():
-    with fitz.open(Path("data/pdfs") / PDFS["BSA"]) as document:
+    with open_statute_pdf("BSA") as document:
         bsa, _ = extract_statute_structure(document, STATUTES["BSA"])
-    with fitz.open(Path("data/pdfs") / PDFS["BNS"]) as document:
+    with open_statute_pdf("BNS") as document:
         bns, _ = extract_statute_structure(document, STATUTES["BNS"])
 
     assert bsa[62].section_title == "Admissibility of electronic records"
