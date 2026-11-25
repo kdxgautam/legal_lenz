@@ -23,6 +23,9 @@ from rag.config import (
 
 _engine = None
 _connector = None
+_iterative_scan: bool | None = None
+
+CHUNK_INSERT_BATCH_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -150,27 +153,31 @@ def insert_chunks(document_id: str, rows: list[dict]) -> None:
             "document_type": document["type"],
             **(document["metadata"] or {}),
         }
-        conn.execute(
-            text(
-                """
-                INSERT INTO chunks (id, document_id, page, article, content, embedding, metadata)
-                VALUES (:id, :document_id, :page, :article, :content, CAST(:embedding AS vector),
-                        CAST(:metadata AS jsonb))
-                """
-            ),
-            [
-                {
-                    "id": str(uuid.uuid4()),
-                    "document_id": document_id,
-                    "page": row["page"],
-                    "article": row.get("article"),
-                    "content": row["content"],
-                    "embedding": vector_literal(row["embedding"]),
-                    "metadata": json.dumps(document_metadata | row.get("metadata", {})),
+        # pg8000's executemany sends one statement per row, so insert multi-row batches instead.
+        for start in range(0, len(rows), CHUNK_INSERT_BATCH_SIZE):
+            batch = rows[start : start + CHUNK_INSERT_BATCH_SIZE]
+            params = {"document_id": document_id}
+            values = []
+            for index, row in enumerate(batch):
+                values.append(
+                    f"(:id_{index}, :document_id, :page_{index}, :article_{index}, :content_{index}, "
+                    f"CAST(:embedding_{index} AS vector), CAST(:metadata_{index} AS jsonb))"
+                )
+                params |= {
+                    f"id_{index}": str(uuid.uuid4()),
+                    f"page_{index}": row["page"],
+                    f"article_{index}": row.get("article"),
+                    f"content_{index}": row["content"],
+                    f"embedding_{index}": vector_literal(row["embedding"]),
+                    f"metadata_{index}": json.dumps(document_metadata | row.get("metadata", {})),
                 }
-                for row in rows
-            ],
-        )
+            conn.execute(
+                text(
+                    "INSERT INTO chunks (id, document_id, page, article, content, embedding, metadata) VALUES "
+                    + ", ".join(values)
+                ),
+                params,
+            )
 
 
 def list_documents(owner_email: str) -> list[dict]:
@@ -449,6 +456,14 @@ def expired_documents(limit: int = 100) -> list[dict]:
         )]
 
 
+def previous_constitution_documents(exclude_id: str) -> list[dict]:
+    with engine().connect() as conn:
+        return [dict(row._mapping) for row in conn.execute(
+            text("SELECT id, gcs_object FROM documents WHERE type = 'constitution' AND id <> :exclude_id"),
+            {"exclude_id": exclude_id},
+        )]
+
+
 def previous_statute_documents(act_short_name: str, exclude_id: str) -> list[dict]:
     with engine().connect() as conn:
         return [dict(row._mapping) for row in conn.execute(
@@ -502,6 +517,18 @@ def _chunks(rows) -> list[Chunk]:
     return [_chunk(dict(row._mapping)) for row in rows]
 
 
+def _pgvector_version(value: str | None) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", value or ""))
+
+
+def _supports_iterative_scan(conn) -> bool:
+    global _iterative_scan
+    if _iterative_scan is None:
+        version = conn.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")).scalar()
+        _iterative_scan = _pgvector_version(version) >= (0, 8)
+    return _iterative_scan
+
+
 def vector_search(
     owner_email: str,
     selected_ids: list[str],
@@ -520,6 +547,10 @@ def vector_search(
         LIMIT :limit
     """
     with engine().connect() as conn:
+        # HNSW otherwise stops after ef_search neighbours, so owner/selection filters
+        # applied afterwards can drop a user's upload chunks entirely.
+        if _supports_iterative_scan(conn):
+            conn.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
         return _chunks(conn.execute(text(sql), params))
 
 
@@ -551,16 +582,22 @@ def exact_search(
     statute_references: list[tuple[str, str]],
     articles: list[str],
     limit: int,
+    query: str = "",
 ) -> list[Chunk]:
-    params = _params(owner_email, selected_ids) | {"limit": limit}
+    params = _params(owner_email, selected_ids) | {"limit": limit, "query": query}
+    # Long sections span many chunks; keep the heading chunk, then prefer chunks matching
+    # the question (e.g. the punishment subsection) over the next illustrations in order.
     statute_sql = f"""
+        WITH q AS (SELECT websearch_to_tsquery('english', :query) AS value)
         SELECT {_chunk_select()}, NULL::float AS distance
-        FROM chunks c JOIN documents d ON d.id = c.document_id
+        FROM chunks c JOIN documents d ON d.id = c.document_id CROSS JOIN q
         WHERE {_SCOPE_SQL}
           AND d.type = 'statute'
           AND d.metadata->>'act_short_name' = :act
           AND c.metadata->>'section_number' = :section
-        ORDER BY (c.metadata->>'chunk_index')::integer
+        ORDER BY (c.metadata->>'chunk_index')::integer = 1 DESC,
+                 ts_rank_cd(c.search_vector, q.value) DESC,
+                 (c.metadata->>'chunk_index')::integer
         LIMIT :limit
     """
     article_sql = f"""

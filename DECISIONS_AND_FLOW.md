@@ -148,6 +148,33 @@ This file records important project decisions: when they were made, where they a
 - **Reason:** The app should be usable by anyone who can authenticate with a Google account.
 - **Consequence:** User data remains isolated by authenticated email, but usage is no longer limited to a curated list.
 
+### DEC-017: OCR scanned upload pages with Mistral
+
+- **When:** 2026-09-15
+- **Status:** Active
+- **Where:** `rag/ocr.py`, `rag/ingest.py`, `MISTRAL_API_KEY`
+- **Decision:** Send only pages with fewer than 100 extracted characters to the Mistral OCR API and use the recognized Markdown as page text.
+- **Reason:** Scanned contracts and court documents have no text layer, so PyMuPDF extraction alone rejects them.
+- **Consequence:** Scanned uploads become searchable, but their PDF bytes are sent to Mistral; OCR is skipped when the key is unset, and OCR failures are logged and surfaced as an ingestion error only when no page has usable text.
+
+### DEC-018: Map repealed IPC, CrPC, and Evidence Act sections from BPR&D tables
+
+- **When:** 2026-09-15
+- **Status:** Active
+- **Where:** `rag/old_laws.py`, `rag/data/old_law_sections.json`, `scripts/build_old_law_map.py`, `rag/retriever.py`, `rag/chat.py`
+- **Decision:** Parse the official BPR&D correspondence tables into a JSON map and translate old-law citations into exact BNS, BNSS, and BSA references, passing the correspondence to the answer prompt as notes.
+- **Reason:** Users, police records, and older judgments still cite IPC, CrPC, and IEA numbers, which previously matched nothing; section numbers must come from an authoritative source, not a model.
+- **Consequence:** Old citations get exact retrieval and a stated correspondence; the map must be regenerated if BPR&D revises its tables.
+
+### DEC-019: Resolve follow-up section references from the conversation
+
+- **When:** 2026-09-15
+- **Status:** Active
+- **Where:** `rag/retriever.py`, `rag/prompts.py`
+- **Decision:** Resolve a bare "section N" to the single Act named in the question or the latest turn naming one, and let query analysis return Act/section pairs from the conversation, accepting only numbers that literally appear in the text.
+- **Reason:** Follow-ups such as "and section 304?" or "the punishment under that section" lost exact matches and fell back to semantic search.
+- **Consequence:** Deterministic follow-ups use the exact-reference path; model-resolved references are boosted like exact matches but still pass through reranking, so a wrong resolution cannot force irrelevant context.
+
 ## Current Application Flow
 
 ### Startup
@@ -169,6 +196,7 @@ User uploads PDF
   -> private GCS object name is generated with UUID
   -> documents row is created as processing
   -> text is extracted with one-based page numbers
+  -> pages without usable text are OCR'd with Mistral when MISTRAL_API_KEY is set
   -> Constitution article extraction runs only for document_type=constitution
   -> chunks are embedded with gemini-embedding-2
   -> chunks are stored in Cloud SQL pgvector
@@ -195,13 +223,16 @@ User asks a question
   -> active chat history and selected upload IDs are loaded from PostgreSQL for this email
   -> selected upload IDs are revalidated against owned, ready, unexpired documents
   -> explicit Act/Section/Article references are parsed deterministically
+  -> IPC/CrPC/IEA citations map to BNS/BNSS/BSA sections through the BPR&D correspondence table
+  -> bare "section N" follow-ups take their Act from the question or recent conversation
   -> natural questions receive one structured Gemini legal-query analysis
+  -> Act/section references the analysis resolves from the conversation are looked up and boosted, then reranked
   -> original and distinct rewritten queries are embedded with gemini-embedding-2
   -> pgvector, PostgreSQL FTS, and exact metadata lookup retrieve scoped candidates
   -> every strategy enforces the same ownership, expiry, and selection predicate
   -> candidates merge by stable identity and rank through RRF
   -> Gemini reranks fused candidates; failure retains fused order
-  -> exact chunks are preserved and final context is capped at 8 diverse chunks
+  -> exact chunks are preserved and final context is capped at FINAL_CONTEXT_K (default 5) diverse chunks
   -> no Gemini answer call is made when context is empty
   -> the original question and authoritative text produce numbered citations and source details
   -> user and assistant messages are saved to the current chat session

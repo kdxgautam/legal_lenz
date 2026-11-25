@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -10,9 +11,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rag import db
 from rag.config import MAX_UPLOAD_BYTES, MAX_UPLOAD_PAGES
 from rag.llm import embed_texts
+from rag.ocr import OcrError, ocr_enabled, ocr_pdf_pages
 from rag.storage import delete_object, upload_pdf
 
+logger = logging.getLogger(__name__)
+
 MAX_ARTICLE_NUMBER = 395
+MIN_PAGE_TEXT_CHARS = 100
 
 
 class IngestError(ValueError):
@@ -41,8 +46,10 @@ def validate_pdf(data: bytes, max_pages: int | None = MAX_UPLOAD_PAGES) -> fitz.
     return doc
 
 
-def clean_text(text: str) -> str:
-    text = re.split(r"_{2,}", text)[0]
+def clean_text(text: str, strip_footnotes: bool = False) -> str:
+    if strip_footnotes:
+        # Constitution pages separate amendment footnotes with a line of underscores.
+        text = re.split(r"_{2,}", text)[0]
     text = re.sub(r"[ \t]+", " ", text)
     return re.sub(r"\n+", "\n", text).strip()
 
@@ -69,11 +76,29 @@ def extract_articles(text: str) -> list[dict]:
     return articles
 
 
-def page_units(doc: fitz.Document, document_type: str) -> list[dict]:
+def page_texts(doc: fitz.Document, document_type: str) -> dict[int, str]:
+    strip_footnotes = document_type == "constitution"
+    return {
+        index: clean_text(page.get_text(), strip_footnotes)
+        for index, page in enumerate(doc, start=1)
+    }
+
+
+def with_ocr_text(data: bytes, texts: dict[int, str]) -> dict[int, str]:
+    """Fill pages without a usable text layer, such as scans, from OCR."""
+    missing = [page for page, text in texts.items() if len(text) < MIN_PAGE_TEXT_CHARS]
+    if not missing or not ocr_enabled():
+        return texts
+    ocr_texts = ocr_pdf_pages(data, missing)
+    return texts | {
+        page: text for page, text in ocr_texts.items() if page in texts and len(text) > len(texts[page])
+    }
+
+
+def units_from_texts(texts: dict[int, str], document_type: str) -> list[dict]:
     units = []
-    for index, page in enumerate(doc, start=1):
-        text = clean_text(page.get_text())
-        if len(text) < 100:
+    for index, text in texts.items():
+        if len(text) < MIN_PAGE_TEXT_CHARS:
             continue
         articles = extract_articles(text) if document_type == "constitution" else []
         if articles:
@@ -81,6 +106,10 @@ def page_units(doc: fitz.Document, document_type: str) -> list[dict]:
         else:
             units.append({"page": index, "article": None, "content": text})
     return units
+
+
+def page_units(doc: fitz.Document, document_type: str) -> list[dict]:
+    return units_from_texts(page_texts(doc, document_type), document_type)
 
 
 def chunk_units(units: list[dict]) -> list[dict]:
@@ -104,8 +133,17 @@ def ingest_pdf(data: bytes, filename: str, document_type: str, owner_email: str 
     try:
         upload_pdf(data, object_name)
         document_id = db.new_document(owner_email, filename, object_name, document_type)
-        chunks = chunk_units(page_units(doc, document_type))
+        texts = page_texts(doc, document_type)
+        ocr_failed = False
+        try:
+            texts = with_ocr_text(data, texts)
+        except OcrError:
+            logger.exception("OCR failed for %s", filename)
+            ocr_failed = True
+        chunks = chunk_units(units_from_texts(texts, document_type))
         if not chunks:
+            if ocr_failed:
+                raise IngestError("Text recognition failed for this scanned PDF. Please try again later.")
             raise IngestError("No readable text was found in this PDF.")
         embeddings = embed_texts([chunk["content"] for chunk in chunks], "RETRIEVAL_DOCUMENT")
         db.insert_chunks(document_id, [{**chunk, "embedding": embedding} for chunk, embedding in zip(chunks, embeddings)])

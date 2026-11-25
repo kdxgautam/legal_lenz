@@ -17,6 +17,7 @@ from rag.config import (
     VECTOR_REWRITE_K,
 )
 from rag.llm import embed_texts, generate_json
+from rag.old_laws import OldLawReference, extract_old_law_references, lookup, mentioned_old_acts
 from rag.prompts import ANALYSIS_PROMPT, RERANK_PROMPT
 from rag.statutes import STATUTES, StatuteReference
 
@@ -27,17 +28,31 @@ ANALYSIS_SCHEMA = {
         "search_query": {"type": "string"},
         "legal_domains": {"type": "array", "items": {"type": "string"}},
         "acts": {"type": "array", "items": {"type": "string"}},
-        "sections": {"type": "array", "items": {"type": "string"}},
+        "statute_references": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"act": {"type": "string"}, "section": {"type": "string"}},
+                "required": ["act", "section"],
+                "additionalProperties": False,
+            },
+        },
         "articles": {"type": "array", "items": {"type": "string"}},
         "keywords": {"type": "array", "items": {"type": "string"}},
         "exact_reference_detected": {"type": "boolean"},
     },
     "required": [
-        "search_query", "legal_domains", "acts", "sections", "articles",
+        "search_query", "legal_domains", "acts", "statute_references", "articles",
         "keywords", "exact_reference_detected",
     ],
     "additionalProperties": False,
 }
+
+HISTORY_TURNS = 6
+BARE_SECTION_RE = re.compile(
+    r"\b(?:sections?|sec\.?|u/s\.?)\s*(\d+[a-z]?(?:\s*(?:,|and|&|or)\s*\d+[a-z]?)*)\b", re.I
+)
+UNKNOWN_ACT_RE = re.compile(r"\b(?:act|code|sanhita|adhiniyam)\b", re.I)
 
 RERANK_SCHEMA = {
     "type": "object",
@@ -72,6 +87,13 @@ class LegalQueryAnalysis:
     keywords: list[str] = field(default_factory=list)
     exact_reference_detected: bool = False
     exact_statute_references: list[StatuteReference] = field(default_factory=list)
+    # References the model resolved from the conversation; boosted but still reranked.
+    inferred_statute_references: list[StatuteReference] = field(default_factory=list)
+    old_law_references: list[OldLawReference] = field(default_factory=list)
+
+    @property
+    def notes(self) -> list[str]:
+        return [reference.note() for reference in self.old_law_references]
 
 
 @dataclass
@@ -81,6 +103,7 @@ class RetrievalCandidate:
     rewrite_rank: int | None = None
     lexical_rank: int | None = None
     exact_rank: int | None = None
+    inferred_rank: int | None = None
     fused_score: float = 0.0
     rerank_score: float | None = None
     rerank_reason: str = ""
@@ -97,6 +120,7 @@ class RetrievalTrace:
     rewrite_vector: list[db.Chunk] = field(default_factory=list)
     full_text: list[db.Chunk] = field(default_factory=list)
     exact: list[db.Chunk] = field(default_factory=list)
+    inferred: list[db.Chunk] = field(default_factory=list)
     fused: list[RetrievalCandidate] = field(default_factory=list)
     reranked: list[RetrievalCandidate] = field(default_factory=list)
     final: list[db.Chunk] = field(default_factory=list)
@@ -166,8 +190,82 @@ def _lexical_search(owner_email: str, selected_ids: list[str], analysis: LegalQu
     return db.full_text_search(owner_email, selected_ids, _fts_query(analysis), FTS_K)
 
 
-def analyze_query(question: str, history: list[dict] | None = None) -> LegalQueryAnalysis:
+def _mentioned_acts(text: str) -> list[str]:
+    return _normalize_acts([text]) + mentioned_old_acts(text)
+
+
+def _resolve_section(act: str, section: str) -> tuple[list[StatuteReference], OldLawReference | None]:
+    """Resolve a section of a current Act or a repealed Act to current statute references."""
+    section = section.upper()
+    number = int(re.match(r"\d+", section).group())
+    if act in STATUTES:
+        return ([StatuteReference(act, section)] if number <= STATUTES[act].final_section else []), None
+    old = lookup(act, section)
+    return (old.statute_references, old) if old else ([], None)
+
+
+def _context_act(question: str, history: list[dict] | None) -> str | None:
+    """The single Act a bare "section N" refers to: named in the question, else in the latest turn naming one."""
+    acts = _mentioned_acts(question)
+    if acts or UNKNOWN_ACT_RE.search(question):
+        return acts[0] if len(acts) == 1 else None
+    for item in reversed((history or [])[-HISTORY_TURNS:]):
+        acts = _mentioned_acts(item.get("content", ""))
+        if acts:
+            return acts[0] if len(acts) == 1 else None
+    return None
+
+
+def _bare_section_numbers(question: str) -> list[str]:
+    return list(dict.fromkeys(
+        number.upper()
+        for group in BARE_SECTION_RE.findall(question)
+        for number in re.findall(r"\d+[a-z]?", group, re.I)
+    ))
+
+
+def explicit_references(
+    question: str,
+    history: list[dict] | None = None,
+) -> tuple[list[StatuteReference], list[OldLawReference]]:
     references = extract_statute_references(question)
+    old_references = extract_old_law_references(question)
+    written = {ref.section_number for ref in references} | {ref.old_section for ref in old_references}
+    bare = [number for number in _bare_section_numbers(question) if number not in written]
+    act = _context_act(question, history) if bare else None
+    for number in bare if act else []:
+        resolved, old = _resolve_section(act, number)
+        references.extend(resolved)
+        if old:
+            old_references.append(old)
+    for old in old_references:
+        references.extend(old.statute_references)
+    return list(dict.fromkeys(references)), list(dict.fromkeys(old_references))
+
+
+def _inferred_references(
+    data: dict,
+    context_text: str,
+) -> tuple[list[StatuteReference], list[OldLawReference]]:
+    references, old_references = [], []
+    for item in data.get("statute_references") or []:
+        if not isinstance(item, dict):
+            continue
+        section = re.sub(r"^section\s+", "", str(item.get("section", "")).strip(), flags=re.I)
+        match = re.match(r"\d+[a-z]{0,2}", section, re.I)
+        acts = _mentioned_acts(str(item.get("act", "")))
+        # Only accept numbers that literally appear in the question or conversation.
+        if not match or len(acts) != 1 or not re.search(rf"\b{re.escape(match.group())}\b", context_text, re.I):
+            continue
+        resolved, old = _resolve_section(acts[0], match.group())
+        references.extend(resolved)
+        if old:
+            old_references.append(old)
+    return list(dict.fromkeys(references)), list(dict.fromkeys(old_references))
+
+
+def analyze_query(question: str, history: list[dict] | None = None) -> LegalQueryAnalysis:
+    references, old_references = explicit_references(question, history)
     articles = extract_article_numbers(question)
     exact_acts = list(dict.fromkeys(reference.act_short_name for reference in references))
     exact_sections = list(dict.fromkeys(reference.section_number for reference in references))
@@ -180,10 +278,11 @@ def analyze_query(question: str, history: list[dict] | None = None) -> LegalQuer
             articles=articles,
             exact_reference_detected=True,
             exact_statute_references=references,
+            old_law_references=old_references,
         )
 
     history_text = "\n".join(
-        f"{item.get('role', '')}: {item.get('content', '')}" for item in (history or [])[-6:]
+        f"{item.get('role', '')}: {item.get('content', '')}" for item in (history or [])[-HISTORY_TURNS:]
     )
     try:
         data = generate_json(
@@ -191,23 +290,31 @@ def analyze_query(question: str, history: list[dict] | None = None) -> LegalQuer
             ANALYSIS_SCHEMA,
         )
         search_query = str(data.get("search_query", "")).strip() or question
-        raw_articles = _strings(data.get("articles"))
+        context_text = f"{question}\n{history_text}"
+        inferred, inferred_old = _inferred_references(data, context_text)
+        articles = [
+            f"Article {number.upper()}"
+            for value in _strings(data.get("articles"))
+            if (number := re.sub(r"^article\s+", "", value, flags=re.I))
+            and re.search(rf"\b{re.escape(number)}\b", context_text, re.I)
+        ]
         return LegalQueryAnalysis(
             original_query=question,
             search_query=search_query,
             legal_domains=_strings(data.get("legal_domains")),
-            acts=_normalize_acts(_strings(data.get("acts"))),
-            sections=[re.sub(r"^section\s+", "", value, flags=re.I).upper() for value in _strings(data.get("sections"))],
-            articles=[
-                f"Article {re.sub(r'^article\s+', '', value, flags=re.I).upper()}"
-                for value in raw_articles
-            ],
+            acts=list(dict.fromkeys(
+                _normalize_acts(_strings(data.get("acts"))) + [ref.act_short_name for ref in inferred]
+            )),
+            sections=list(dict.fromkeys(ref.section_number for ref in inferred)),
+            articles=list(dict.fromkeys(articles)),
             keywords=_strings(data.get("keywords")),
             exact_reference_detected=False,
             exact_statute_references=[],
+            inferred_statute_references=inferred,
+            old_law_references=list(dict.fromkeys(old_references + inferred_old)),
         )
     except Exception:
-        return LegalQueryAnalysis(original_query=question, search_query=question)
+        return LegalQueryAnalysis(original_query=question, search_query=question, old_law_references=old_references)
 
 
 def _candidate_key(chunk: db.Chunk):
@@ -224,12 +331,13 @@ def merge_candidates(results: dict[str, list[db.Chunk]]) -> list[RetrievalCandid
         "rewrite": "rewrite_rank",
         "full_text": "lexical_rank",
         "exact": "exact_rank",
+        "inferred": "inferred_rank",
     }
     for strategy, chunks in results.items():
         for rank, chunk in enumerate(chunks, 1):
             key = _candidate_key(chunk)
             candidate = candidates.setdefault(key, RetrievalCandidate(chunk=chunk))
-            if strategy == "exact":
+            if strategy in ("exact", "inferred"):
                 candidate.chunk = chunk
             setattr(candidate, rank_fields[strategy], rank)
 
@@ -237,8 +345,9 @@ def merge_candidates(results: dict[str, list[db.Chunk]]) -> list[RetrievalCandid
         for rank in (candidate.original_rank, candidate.rewrite_rank, candidate.lexical_rank):
             if rank is not None:
                 candidate.fused_score += 1 / (RRF_CONSTANT + rank)
-        if candidate.exact_rank is not None:
-            candidate.fused_score += EXACT_RRF_WEIGHT / (RRF_CONSTANT + candidate.exact_rank)
+        for rank in (candidate.exact_rank, candidate.inferred_rank):
+            if rank is not None:
+                candidate.fused_score += EXACT_RRF_WEIGHT / (RRF_CONSTANT + rank)
     return sorted(candidates.values(), key=lambda item: (-item.fused_score, item.chunk.id))[:FUSION_K]
 
 
@@ -359,7 +468,18 @@ def retrieve_with_trace(
         [(ref.act_short_name, ref.section_number) for ref in analysis.exact_statute_references],
         extract_article_numbers(question),
         FINAL_CONTEXT_K,
+        query=_fts_query(analysis),
     )
+    inferred = []
+    if not analysis.exact_reference_detected and (analysis.inferred_statute_references or analysis.articles):
+        inferred = db.exact_search(
+            owner_email,
+            selected_ids,
+            [(ref.act_short_name, ref.section_number) for ref in analysis.inferred_statute_references],
+            analysis.articles,
+            FINAL_CONTEXT_K,
+            query=_fts_query(analysis),
+        )
     if analysis.exact_reference_detected and exact:
         fused = merge_candidates({"original": [], "rewrite": [], "full_text": [], "exact": exact})
         exact_candidates = [candidate for candidate in fused if candidate.exact_match]
@@ -386,6 +506,7 @@ def retrieve_with_trace(
         "rewrite": rewrite,
         "full_text": full_text,
         "exact": exact,
+        "inferred": inferred,
     })
     exact_candidates = [candidate for candidate in fused if candidate.exact_match]
     if analysis.exact_reference_detected:
@@ -399,18 +520,10 @@ def retrieve_with_trace(
         rewrite_vector=rewrite,
         full_text=full_text,
         exact=exact,
+        inferred=inferred,
         fused=fused,
         reranked=reranked,
         final=final,
         rerank_fallback=fallback,
     )
 
-
-def retrieve_chunks(
-    owner_email: str,
-    selected_ids: list[str],
-    question: str | list[str],
-    history: list[dict] | None = None,
-) -> list[db.Chunk]:
-    original = question[0] if isinstance(question, list) else question
-    return retrieve_with_trace(owner_email, selected_ids, original, history).final

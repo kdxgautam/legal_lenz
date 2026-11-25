@@ -6,6 +6,7 @@ from rag.ingest import IngestError, extract_articles, safe_filename, validate_pd
 from rag.retriever import (
     LegalQueryAnalysis,
     RetrievalCandidate,
+    RetrievalTrace,
     analyze_query,
     extract_article_number,
     extract_statute_references,
@@ -20,6 +21,10 @@ def chunk(chunk_id="c1", act=None, section=None, article=None, content="text"):
     if act:
         metadata |= {"act_short_name": act, "section_number": section, "chunk_index": 1}
     return Chunk(chunk_id, f"d-{act or 'constitution'}", "Document", 1, article, content, metadata=metadata)
+
+
+def trace(final, question="q", **analysis):
+    return RetrievalTrace(analysis=LegalQueryAnalysis(question, question, **analysis), final=final)
 
 
 def test_article_21a_is_parsed():
@@ -111,7 +116,7 @@ def test_original_and_rewrite_vectors_execute(monkeypatch):
         lambda *args: calls.append(args[2]) or ([original] if args[2] == [0.0] else [rewritten]),
     )
     monkeypatch.setattr("rag.retriever.db.full_text_search", lambda *args: [])
-    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args: [])
+    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args, **_: [])
     monkeypatch.setattr("rag.retriever.rerank_candidates", lambda q, a, c: (c, False))
     trace = retrieve_with_trace("a@example.com", [], "q")
     assert calls == [[0.0], [1.0]]
@@ -120,7 +125,7 @@ def test_original_and_rewrite_vectors_execute(monkeypatch):
 
 def test_exact_retrieval_skips_slow_paths(monkeypatch):
     exact = chunk("exact", "BNS", "303")
-    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args: [exact])
+    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args, **_: [exact])
     monkeypatch.setattr("rag.retriever.embed_texts", lambda *_: pytest.fail("exact query should not embed"))
     monkeypatch.setattr("rag.retriever.db.vector_search", lambda *_: pytest.fail("exact query should not vector search"))
     monkeypatch.setattr("rag.retriever.db.full_text_search", lambda *_: pytest.fail("exact query should not FTS"))
@@ -135,7 +140,7 @@ def test_lexical_search_runs_once(monkeypatch):
     ))
     monkeypatch.setattr("rag.retriever.embed_texts", lambda texts, _: [[0.0] for _ in texts])
     monkeypatch.setattr("rag.retriever.db.vector_search", lambda *args: [])
-    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args: [])
+    monkeypatch.setattr("rag.retriever.db.exact_search", lambda *args, **_: [])
     monkeypatch.setattr("rag.retriever.rerank_candidates", lambda q, a, c: (c, False))
     calls = []
     monkeypatch.setattr("rag.retriever.db.full_text_search", lambda *args: calls.append(args[2]) or [])
@@ -168,15 +173,24 @@ def test_context_uses_numbered_sources():
 
 
 def test_no_context_skips_answer_model(monkeypatch):
-    monkeypatch.setattr(chat, "retrieve_chunks", lambda *args: [])
+    monkeypatch.setattr(chat, "retrieve_with_trace", lambda *args: trace([]))
     monkeypatch.setattr(chat, "generate_text", lambda *_: pytest.fail("answer model should not run"))
     result = chat.ask_question("a@example.com", [], "hello", [])
     assert result == {"answer": chat.NO_CONTEXT_ANSWER, "sources": []}
 
 
 def test_answer_receives_original_question(monkeypatch):
-    monkeypatch.setattr(chat, "retrieve_chunks", lambda *args: [chunk(article="Article 21")])
+    monkeypatch.setattr(chat, "retrieve_with_trace", lambda *args: trace([chunk(article="Article 21")]))
     prompts = []
     monkeypatch.setattr(chat, "generate_text", lambda prompt: prompts.append(prompt) or "answer [1]")
     chat.ask_question("a@example.com", [], "What did I actually ask?", [])
     assert "Original user question:\nWhat did I actually ask?" in prompts[0]
+
+
+def test_underscores_only_truncate_constitution_footnotes():
+    from rag.ingest import clean_text
+
+    contract = "Signature: ____________\nThe tenant may terminate with 30 days notice."
+    assert clean_text(contract) == contract
+    constitution = "21. Protection of life.\n______\n1. Ins. by amendment."
+    assert clean_text(constitution, strip_footnotes=True) == "21. Protection of life."

@@ -9,7 +9,16 @@ from google.oauth2 import service_account
 def credentials():
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not raw:
+        try:
+            from streamlit import secrets
+
+            raw = secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        except Exception:
+            raw = None
+    if not raw:
         return None
+    if isinstance(raw, dict):
+        raw = json.dumps(raw)
     return service_account.Credentials.from_service_account_info(
         json.loads(raw),
         scopes=["https://www.googleapis.com/auth/cloud-platform"],

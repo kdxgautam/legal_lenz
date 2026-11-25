@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ID="${PROJECT_ID:-project-3e52c857-15d9-4fe6-b2f}"
+PROJECT_ID="${PROJECT_ID:-project-2d06ae6e-1f76-495e-809}"
 REGION="${REGION:-asia-south1}"
 SERVICE="${SERVICE:-legal-lenz}"
 IMAGE="gcr.io/${PROJECT_ID}/${SERVICE}:$(git rev-parse --short HEAD)"

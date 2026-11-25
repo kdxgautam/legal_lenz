@@ -1,6 +1,6 @@
 from rag.llm import generate_text
 from rag.prompts import ANSWER_PROMPT
-from rag.retriever import retrieve_chunks
+from rag.retriever import HISTORY_TURNS, retrieve_with_trace
 
 NO_CONTEXT_ANSWER = "I could not find sufficient information in the selected documents."
 
@@ -30,17 +30,21 @@ def _legal_label(chunk) -> str:
 
 
 def ask_question(owner_email: str, selected_document_ids: list[str], question: str, history: list[dict]) -> dict:
-    chunks = retrieve_chunks(owner_email, selected_document_ids, question, history)
+    trace = retrieve_with_trace(owner_email, selected_document_ids, question, history)
+    chunks = trace.final
+    notes = trace.analysis.notes
+    no_context_answer = "\n\n".join([NO_CONTEXT_ANSWER, *notes])
     if not chunks:
-        return {"answer": NO_CONTEXT_ANSWER, "sources": []}
-    text_history = "\n".join(f"{item['role']}: {item['content']}" for item in history[-6:])
+        return {"answer": no_context_answer, "sources": []}
+    text_history = "\n".join(f"{item['role']}: {item['content']}" for item in history[-HISTORY_TURNS:])
     answer = generate_text(ANSWER_PROMPT.format(
+        notes="\n".join(notes) or "None",
         context=build_context(chunks),
         history=text_history or "None",
         question=question,
     ))
     return {
-        "answer": answer or NO_CONTEXT_ANSWER,
+        "answer": answer or no_context_answer,
         "sources": [
             {
                 "citation": chunk.citation,

@@ -33,21 +33,45 @@ def migrate() -> None:
 def ingest_constitution(path: str, full: bool = False) -> None:
     data = Path(path).read_bytes()
     doc = validate_pdf(data, max_pages=None)
-    object_name = "constitution/full.pdf" if full else "constitution/fundamental-rights.pdf"
-    upload_pdf(data, object_name)
-    with db.tx() as conn:
-        conn.execute(text("DELETE FROM documents WHERE type = 'constitution'"))
-    title = "Constitution of India" if full else "Constitution of India - Fundamental Rights"
-    document_id = db.new_document(None, title, object_name, "constitution")
-    units = page_units(doc, "constitution")
-    if not full:
-        units = [unit for unit in units if unit["page"] <= 60 and unit["article"]]
-    chunks = chunk_units(units)
-    print(f"Embedding {len(chunks)} chunks...")
-    embeddings = embed_texts([chunk["content"] for chunk in chunks], "RETRIEVAL_DOCUMENT")
-    db.insert_chunks(document_id, [{**chunk, "embedding": embedding} for chunk, embedding in zip(chunks, embeddings)])
-    db.set_document_status(document_id, "ready")
-    doc.close()
+    document_id = None
+    uploaded = False
+    object_name = f"constitution/{uuid.uuid4()}.pdf"
+    try:
+        units = page_units(doc, "constitution")
+        if not full:
+            units = [unit for unit in units if unit["page"] <= 60 and unit["article"]]
+        chunks = chunk_units(units)
+        if not chunks:
+            raise ValueError("No Constitution articles were detected.")
+
+        # Publish the new index before removing the old one, so a failed run keeps the app answering.
+        upload_pdf(data, object_name)
+        uploaded = True
+        title = "Constitution of India" if full else "Constitution of India - Fundamental Rights"
+        document_id = db.new_document(None, title, object_name, "constitution")
+        print(f"Embedding {len(chunks)} chunks...")
+        embeddings = embed_texts([chunk["content"] for chunk in chunks], "RETRIEVAL_DOCUMENT")
+        db.insert_chunks(
+            document_id,
+            [{**chunk, "embedding": embedding} for chunk, embedding in zip(chunks, embeddings)],
+        )
+        db.set_document_status(document_id, "ready")
+
+        for old in db.previous_constitution_documents(document_id):
+            db.delete_document_row(old["id"])
+            try:
+                delete_object(old["gcs_object"])
+            except Exception as exc:
+                print(f"WARNING: Old GCS object could not be deleted: {exc}")
+        print(f"Constitution ingested: {len(chunks)} chunks")
+    except Exception:
+        if document_id:
+            db.set_document_status(document_id, "failed")
+        if uploaded:
+            delete_object(object_name)
+        raise
+    finally:
+        doc.close()
 
 
 def ingest_statute(path: str, act: str) -> None:
@@ -133,6 +157,10 @@ def debug_retrieval(question: str, email: str, document_ids: list[str]) -> None:
     print(f"Sections: {', '.join(analysis.sections) or 'none'}")
     print(f"Articles: {', '.join(analysis.articles) or 'none'}")
     print(f"Keywords: {', '.join(analysis.keywords) or 'none'}")
+    inferred = [f"{ref.act_short_name} {ref.section_number}" for ref in analysis.inferred_statute_references]
+    print(f"Inferred references: {', '.join(inferred) or 'none'}")
+    for note in analysis.notes:
+        print(f"Note: {note}")
     print()
 
     def print_chunks(label, chunks):
@@ -149,6 +177,7 @@ def debug_retrieval(question: str, email: str, document_ids: list[str]) -> None:
     print_chunks("REWRITE VECTOR", trace.rewrite_vector)
     print_chunks("FULL TEXT", trace.full_text)
     print_chunks("EXACT MATCH", trace.exact)
+    print_chunks("INFERRED REFERENCES", trace.inferred)
     print(f"MERGED CANDIDATES: {len(trace.fused)}")
     print("RERANKED" + (" (fusion fallback)" if trace.rerank_fallback else ""))
     for index, candidate in enumerate(trace.reranked, 1):

@@ -65,7 +65,7 @@ def main():
             skipped += 1
             print(f"SKIP {index}: upload fixture not supplied")
             continue
-        trace = retrieve_with_trace(args.email, args.document_id, case["question"])
+        trace = retrieve_with_trace(args.email, args.document_id, case["question"], case.get("history"))
         records.append((case, trace.original_vector, trace.final))
         print(f"DONE {index}/{len(cases)}: {case['question']}")
         missing = [

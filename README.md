@@ -20,7 +20,7 @@ uv run streamlit run app.py
 
 For local Google ADC, keep `application_default_credentials.json` in this folder. It is ignored by Git.
 
-For Streamlit Cloud, set `GOOGLE_SERVICE_ACCOUNT_JSON` in app secrets instead of uploading `application_default_credentials.json`.
+For Streamlit Cloud, set `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CLOUD_PROJECT`, `DATABASE_URL`, and `UPLOAD_BUCKET` in app secrets instead of uploading `application_default_credentials.json`. The app reads Streamlit secrets directly; environment variables still take precedence for local and Cloud Run deployments.
 
 ## Streamlit Auth
 
@@ -42,12 +42,13 @@ Any Google-authenticated user can enter the app.
 Add root-level environment secrets plus the auth block in Streamlit Cloud:
 
 ```toml
-GOOGLE_SERVICE_ACCOUNT_JSON = '''{"type":"service_account","project_id":"project-3e52c857-15d9-4fe6-b2f","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"legal-lenz@project-3e52c857-15d9-4fe6-b2f.iam.gserviceaccount.com","client_id":"...","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_x509_cert_url":"...","universe_domain":"googleapis.com"}'''
+GOOGLE_SERVICE_ACCOUNT_JSON = '''{"type":"service_account","project_id":"project-2d06ae6e-1f76-495e-809","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"legal-lenz@project-2d06ae6e-1f76-495e-809.iam.gserviceaccount.com","client_id":"...","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_x509_cert_url":"...","universe_domain":"googleapis.com"}'''
 GOOGLE_GENAI_USE_VERTEXAI = "true"
-GOOGLE_CLOUD_PROJECT = "project-3e52c857-15d9-4fe6-b2f"
+GOOGLE_CLOUD_PROJECT = "project-2d06ae6e-1f76-495e-809"
 GOOGLE_CLOUD_LOCATION = "global"
 DATABASE_URL = "postgresql://USER:PASSWORD@HOST/neondb?sslmode=require&channel_binding=require"
 UPLOAD_BUCKET = "your-private-upload-bucket"
+MISTRAL_API_KEY = "optional-mistral-key-for-scanned-pdfs"
 
 [auth]
 redirect_uri = "https://legal-lenz.streamlit.app/oauth2callback"
@@ -82,8 +83,25 @@ Deployment helpers:
 ```bash
 UPLOAD_BUCKET=legal-lenz-private ./infra/provision.sh
 INSTANCE_CONNECTION_NAME=... DB_NAME=legal_lenz DB_USER=... UPLOAD_BUCKET=... ./infra/deploy.sh
-IMAGE=gcr.io/project-3e52c857-15d9-4fe6-b2f/legal-lenz:SHA ./infra/cleanup-job.sh
+IMAGE=gcr.io/project-2d06ae6e-1f76-495e-809/legal-lenz:SHA INSTANCE_CONNECTION_NAME=... DB_NAME=legal_lenz DB_USER=... ./infra/migrate-job.sh
+IMAGE=gcr.io/project-2d06ae6e-1f76-495e-809/legal-lenz:SHA INSTANCE_CONNECTION_NAME=... DB_NAME=legal_lenz DB_USER=... ./infra/cleanup-job.sh
 ```
+
+## Old Law References
+
+Questions that cite repealed sections, such as "IPC 420", "302 IPC", "Section 438 CrPC", or "65B of the Evidence Act", are mapped to the corresponding BNS, BNSS, or BSA sections and retrieved as exact references. The answer states the correspondence; repealed sections with no equivalent get a note instead. The mapping lives in `rag/data/old_law_sections.json` and is generated from the official BPR&D correspondence tables:
+
+```bash
+uv run python scripts/build_old_law_map.py BNS_IPC.pdf BNSS_CRPC.pdf BSA_IEA.pdf
+```
+
+The script's docstring lists the source PDF URLs.
+
+Follow-up questions keep exact lookups: "And section 304?" after a BNS question resolves to BNS 304, and references such as "that section" are resolved from the recent conversation.
+
+## Scanned PDFs
+
+When `MISTRAL_API_KEY` is set, upload pages with no usable text layer are sent to Mistral OCR (`mistral-ocr-latest`) and the recognized text is chunked and embedded like any other page. Pages that already have text are never OCR'd. Without the key, scanned PDFs fail with "No readable text was found". On Cloud Run, provide the key through Secret Manager, for example `--set-secrets MISTRAL_API_KEY=legal-lenz-mistral-api-key:latest`.
 
 ## Data Retention
 
@@ -137,7 +155,7 @@ These are measured results from 22 cases; the upload case was skipped because no
 3. Create a private bucket in `asia-south1` and disable soft deletion.
 4. Create Secret Manager entry `legal-lenz-streamlit-secrets` containing Streamlit OIDC config.
 5. Grant the Cloud Run service account Cloud SQL Client, Vertex AI User, Storage Object Admin on the bucket, and Secret Manager Secret Accessor.
-6. Run migration through a job, then index the Constitution and three statutes.
+6. Deploy the image, run `infra/migrate-job.sh`, then index the Constitution and three statutes.
 7. Deploy one Cloud Run revision in `asia-south1`, smoke test auth/retrieval/upload/delete, then send traffic.
 8. Smoke test Google login, chat create/switch/rename/delete, and the five-chat limit for a signed-in email.
 9. Schedule the cleanup job daily and alert on Cloud Run errors, cleanup failures, Gemini failures, and Cloud SQL pressure.

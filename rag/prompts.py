@@ -11,8 +11,11 @@ Question:
 ANALYSIS_PROMPT = """Analyze this Indian-law question for document retrieval.
 Return concise structured fields. The search query is a retrieval aid, not an answer.
 Suggest every Act reasonably needed to cover both an underlying offence or right and
-the related procedure; do not return only the primary Act. Sections and Articles must contain only
-references explicitly written by the user; never infer or invent their numbers.
+the related procedure; do not return only the primary Act.
+statute_references and articles may contain only references written in the question, or written in
+the recent conversation when the question refers back to them (for example "that section" or "it").
+Give each statute reference with its Act (BNS, BNSS, BSA, IPC, CrPC, or Evidence Act) and section.
+Never infer or invent section or Article numbers that do not appear in the text.
 Keep search_query short and use BNS, BNSS, or BSA aliases instead of full Act names.
 
 Recent conversation:
@@ -48,6 +51,11 @@ Rules:
 - Use numbered inline citations like [1] for every factual claim.
 - Do not invent case law, penalties, dates, or legal advice.
 - Keep the answer concise and grounded.
+- The BNS, BNSS, and BSA replaced the IPC, CrPC, and Indian Evidence Act. When reference notes map an
+  old section, state the correspondence briefly and answer from the new section's text.
+
+Reference notes:
+{notes}
 
 Context:
 {context}

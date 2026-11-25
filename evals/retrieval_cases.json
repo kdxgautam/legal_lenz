@@ -21,5 +21,10 @@
   {"question": "Which Article provides constitutional remedies?", "kind": "natural", "expected": [{"document_type": "constitution", "article": "Article 32"}]},
   {"question": "How are confessions treated as evidence?", "kind": "natural", "expected": [{"act": "BSA"}]},
   {"question": "Which law contains the procedure for a criminal trial?", "kind": "natural", "expected": [{"act": "BNSS"}]},
-  {"question": "What does my uploaded contract say about termination?", "kind": "upload", "requires_upload": true, "expected": [{"document_type": "upload"}]}
+  {"question": "What does my uploaded contract say about termination?", "kind": "upload", "requires_upload": true, "expected": [{"document_type": "upload"}]},
+  {"question": "What does IPC 420 say now?", "kind": "old-law", "expected": [{"act": "BNS", "section": "318"}]},
+  {"question": "Explain Section 438 of the CrPC", "kind": "old-law", "expected": [{"act": "BNSS", "section": "482"}]},
+  {"question": "Is 65B of the Evidence Act still relevant?", "kind": "old-law", "expected": [{"act": "BSA", "section": "63"}]},
+  {"question": "And section 304?", "kind": "follow-up", "history": [{"role": "user", "content": "What does BNS Section 303 say?"}, {"role": "assistant", "content": "Section 303 defines theft [1]."}], "expected": [{"act": "BNS", "section": "304"}]},
+  {"question": "What is the punishment under that section?", "kind": "follow-up", "history": [{"role": "user", "content": "What does BNS Section 303 say?"}, {"role": "assistant", "content": "Section 303 defines theft [1]."}], "expected": [{"act": "BNS", "section": "303"}]}
 ]

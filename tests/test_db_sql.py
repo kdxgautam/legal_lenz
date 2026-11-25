@@ -21,3 +21,40 @@ def test_chat_titles_are_short_and_sources_drop_excerpts():
     assert _sanitize_sources([{"citation": 1, "text": "private excerpt", "metadata": {"section": "1"}}]) == [
         {"citation": 1, "metadata": {"section": "1"}}
     ]
+
+
+def test_iterative_scan_requires_pgvector_0_8():
+    from rag.db import _pgvector_version
+
+    assert _pgvector_version("0.8.0") >= (0, 8)
+    assert _pgvector_version("0.10.1") >= (0, 8)
+    assert _pgvector_version("0.7.4") < (0, 8)
+    assert _pgvector_version(None) < (0, 8)
+
+
+def test_insert_chunks_batches_rows(monkeypatch):
+    from contextlib import contextmanager
+
+    from rag import db
+
+    class FakeResult:
+        def one(self):
+            return type("Row", (), {"_mapping": {"original_filename": "a.pdf", "type": "upload", "metadata": {}}})()
+
+    statements = []
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            statements.append((str(statement), params))
+            return FakeResult()
+
+    @contextmanager
+    def fake_tx():
+        yield FakeConn()
+
+    monkeypatch.setattr(db, "tx", fake_tx)
+    rows = [{"page": 1, "article": None, "content": f"chunk {i}", "embedding": [0.0]} for i in range(250)]
+    db.insert_chunks("doc-1", rows)
+    inserts = [params for sql, params in statements if sql.startswith("INSERT INTO chunks")]
+    assert [sum(key.startswith("content_") for key in params) for params in inserts] == [100, 100, 50]
+    assert inserts[2]["content_49"] == "chunk 249"
